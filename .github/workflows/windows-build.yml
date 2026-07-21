@@ -22,12 +22,16 @@ concurrency:
 
 env:
   FLUTTER_VERSION: '3.44.6'
+  # APP_VERSION 必须与 4 处一致铁律保持同步：
+  #   pubspec.yaml (version: 1.0.0+1) / windows/runner/Runner.rc (VERSION_AS_STRING)
+  #   packaging/config/env_windows.sh (APP_VERSION) / linux/CMakeLists.txt:10 (APPLICATION_ID)
+  APP_VERSION: '1.0.0'
   CI: true
 
 jobs:
   build:
     name: Windows x64 Release ZIP
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 30
 
     steps:
@@ -72,14 +76,43 @@ jobs:
           Write-Host "===Staged tree==="
           Get-ChildItem $staging -Recurse | Format-Table FullName, Length -AutoSize
 
+      - name: Generate SHA256SUMS-windows.txt
+        shell: pwsh
+        run: |
+          # 与本地 make_windows_zip.sh 行为对齐：
+          #   - 遍历 staging/RIDEN_PowerSupply/ 下全部文件
+          #   - 按 sha256sum(1) 格式输出 "<hash> *<relpath>"，便于 `sha256sum -c` 校验
+          #   - manifest 放 staging/ 父目录，不污染最终 ZIP 内的 RIDEN_PowerSupply/ bundle
+          $staging = "staging/RIDEN_PowerSupply"
+          $out = "staging/SHA256SUMS-windows.txt"
+          $lines = @()
+          Get-ChildItem $staging -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring((Resolve-Path $staging).Path.Length + 1).Replace('\','/')
+            $sha = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
+            $lines += "$sha *RIDEN_PowerSupply/$rel"
+          }
+          $lines | Out-File -FilePath $out -Encoding ascii -NoNewline:$false
+          Write-Host "===SHA256SUMS-windows.txt ($($lines.Count) entries)==="
+          Get-Content $out
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RIDEN_PowerSupply-windows-x64
+          name: RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64
           # path 指向 staging 父目录（而非 staging/RIDEN_PowerSupply），
           # 让 upload-artifact@v4 保留 RIDEN_PowerSupply/ 顶层目录在 ZIP 内，
           # 与本地 make_windows_zip.sh 输出格式一致 — 用户解压即得到统一顶层目录。
+          # 同时打包 SHA256SUMS-windows.txt 到 artifact 顶层（与 ZIP 并列，供下载者独立校验）。
           path: staging
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload SHA256SUMS-windows.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64-SHA256SUMS
+          path: staging/SHA256SUMS-windows.txt
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
