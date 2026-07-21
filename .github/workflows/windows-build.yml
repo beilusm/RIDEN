@@ -69,24 +69,14 @@ jobs:
           New-Item -ItemType Directory -Path $staging -Force | Out-Null
           Copy-Item -Path "$bundle/*" -Destination $staging -Recurse -Force
           Write-Host "Staged $((Get-ChildItem $staging -Recurse -File).Count) files under $staging/"
-
-      - name: Create ZIP artifact
-        shell: pwsh
-        run: |
-          $short_sha = "${{ github.sha }}".Substring(0, 7)
-          $zip = "RIDEN_PowerSupply-windows-x64-${short_sha}.zip"
-          Compress-Archive `
-            -Path "staging/RIDEN_PowerSupply" `
-            -DestinationPath $zip `
-            -CompressionLevel Optimal
-          Write-Host "===Artifact==="
-          Get-Item $zip | Format-List Name, Length, FullName
+          Write-Host "===Staged tree==="
+          Get-ChildItem $staging -Recurse | Format-Table FullName, Length -AutoSize
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: RIDEN_PowerSupply-windows-x64
-          path: RIDEN_PowerSupply-windows-x64-*.zip
+          path: staging/RIDEN_PowerSupply
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
