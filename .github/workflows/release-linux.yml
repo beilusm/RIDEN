@@ -1,0 +1,307 @@
+name: Linux Tag Release
+
+# Tag 触发的 Linux Release 自动发布：构建 + 打 AppImage + 生成 SHA256SUMS-linux.txt
+# + 上传到 GitHub Release。与 release-windows.yml 互补：
+#   - 同 tag 下两个 workflow 同时触发，softprops/action-gh-release@v2 复用同一 Release
+#     各自只追加自己的 assets（fail_on_unmatched_files 保证独立完整性）
+#   - 触发条件相同：push 以 v 开头的 tag
+#   - 版本号从 tag 解析（v1.0.0 -> 1.0.0），不读取 env.sh hardcoded APP_VERSION
+# 4 处一致铁律仍要人工保证：tag 名 v1.0.0 必须与 pubspec.yaml/env.sh/linux/windows runner 同步。
+# name / body 与 release-windows.yml 逐字一致 — 谁后跑谁覆盖；二者一致则用户感知无变化。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Tag 触发的 release 构建不取消进行中的（同 tag 重打少，跨 tag 并发保留）
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: '3.44.6'
+  CI: true
+
+permissions:
+  contents: write   # softprops/action-gh-release 需要 permission 创建 Release + 上传 assets
+
+jobs:
+  release:
+    name: Linux x86_64 Release (Tag-triggered)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse version from tag
+        id: ver
+        run: |
+          # GITHUB_REF_NAME = "v1.0.0" / "v1.1.0-rc.1" 等
+          # 期望去掉前导 v 得到 "1.0.0"，与 pubspec.yaml / env.sh / linux/windows runner 四处一致铁律对齐
+          raw="${{ github.ref_name }}"
+          echo "raw tag: $raw"
+          if [[ ! "$raw" =~ ^v(.+)$ ]]; then
+            echo "::error::tag '$raw' 不匹配 '^v.+' 期望格式（v 开头，例 v1.0.0 / v1.0.0-rc.1）"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          echo "parsed version: $version"
+          echo "APP_VERSION=$version" >> $GITHUB_ENV
+
+      - name: Verify tag version matches pubspec.yaml
+        run: |
+          # 4 处一致铁律自动化校验：tag 的 semver 必须与 pubspec.yaml version 字段前部分一致。
+          # pubspec.yaml 格式："version: 1.0.0+1" — 只比较 + 前的 semver
+          # tag 格式：v1.0.0 / v1.0.0-rc.1 — 用 env.APP_VERSION（已 strip v 前缀）
+          # 不一致即 exit 1，避免 Release 产物版本号错配。
+          tag_version="$APP_VERSION"
+          pubspec_line=$(grep -E '^[[:space:]]*version:[[:space:]]' pubspec.yaml | head -1)
+          if [[ -z "$pubspec_line" ]]; then
+            echo "::error::pubspec.yaml 未找到 version: 字段"
+            exit 1
+          fi
+          pubspec_version=$(echo "$pubspec_line" | sed -E 's/^[[:space:]]*version:[[:space:]]*([^[:space:]]+).*/\1/')
+          # 只取 + 前部分（SemVer build metadata 不参与比较）
+          pubspec_semver="${pubspec_version%%+*}"
+          # tag 中 -rc.1 之类 prerelease 也不参与比较
+          # 必须用 %%-*（最长后缀删除）而非 %-*（最短）— 否则
+          # "1.0.0-linux-test" 会被切成 "1.0.0-linux" 而非 "1.0.0"
+          tag_semver="${tag_version%%-*}"
+          echo "tag version:      $tag_version"
+          echo "pubspec version:  $pubspec_version"
+          echo "tag semver:       $tag_semver (after strip prerelease suffix)"
+          echo "pubspec semver:   $pubspec_semver (after strip +build)"
+          if [[ "$tag_semver" != "$pubspec_semver" ]]; then
+            echo "::error::Tag version $tag_semver != pubspec.yaml version $pubspec_semver"
+            exit 1
+          fi
+          echo "OK: tag semver matches pubspec.yaml semver ($tag_semver)"
+
+      - name: Install Linux build dependencies
+        run: |
+          # flutter build linux --release 需要 GTK3/glib 开发头 + libserialport-dev
+          # ubuntu-24.04 runner image 默认只有 libgtk-3-0 运行时（没有 dev headers）
+          # libfuse2t64: ubuntu-24.04 time64 variant; appimagetool 运行时 fallback
+          # libxml2-utils: 给 compute_checksums.sh 用（虽然本 workflow 不调它，但本地构建脚本一致性保留）
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libserialport-dev \
+            libxml2-utils \
+            libfuse2t64
+
+      - name: Install appimagetool (extract mode, no FUSE dependency on AppImage itself)
+        run: |
+          # ubuntu-24.04 runner 不预装 appimagetool，apt repo 也没有
+          # 官方下载 + --appimage-extract 解开到 squashfs-root/ + wrapper 调用
+          set -e
+          wget -q \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -O /tmp/appimagetool.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          cd /tmp
+          # --appimage-extract 不需要 FUSE mount — type2-runtime 内置 in-place extract
+          ./appimagetool.AppImage --appimage-extract >/dev/null
+          # 用 wrapper 脚本调 squashfs-root/AppRun，避免 AppRun 直接 symlink 时
+          # dirname($0) 解析路径问题
+          sudo tee /usr/local/bin/appimagetool >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec /tmp/squashfs-root/AppRun "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/appimagetool
+          echo "=== appimagetool version ==="
+          appimagetool --version
+
+      - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build Linux Release bundle
+        run: flutter build linux --release
+
+      - name: Verify bundle executable
+        run: |
+          bin="build/linux/x64/release/bundle/riden_power_supply"
+          if [[ ! -x "$bin" ]]; then
+            echo "::error::riden_power_supply missing from build bundle"
+            exit 1
+          fi
+          echo "OK: $bin found"
+          echo "===Release bundle contents==="
+          ls -la build/linux/x64/release/bundle/ | sed 's/^/  /'
+
+      - name: Fetch AppImage type2-runtime
+        run: |
+          # fetch_tools.sh 下载 packaging/tools/runtime-x86_64 (923KB)
+          # preflight 检查 appimagetool 在 PATH
+          bash packaging/scripts/fetch_tools.sh
+
+      - name: Build AppImage
+        run: |
+          # make_appimage.sh 5 stages: 准备 AppDir → cp Flutter bundle → cp .desktop/icons/metainfo
+          # → 写 AppRun + symlink → appimagetool --runtime-file 打包
+          # 受 env.sh hardcoded APP_VERSION="1.0.0" 影响，输出文件名为
+          # RIDEN_PowerSupply-1.0.0-x86_64.AppImage（与 tag 版本可能不一致 → Phase L1.2）
+          # 下一步 mv 为 tag 版本号 + 加 -linux- 后缀
+          bash packaging/scripts/make_appimage.sh
+
+      - name: Rename AppImage + Generate SHA256SUMS-linux.txt
+        run: |
+          set -e
+          cd release
+          src=$(ls RIDEN_PowerSupply-*-x86_64.AppImage | head -1)
+          dst="RIDEN_PowerSupply-${APP_VERSION}-linux-x86_64.AppImage"
+          mv "$src" "$dst"
+          echo "renamed: $src -> $dst"
+          ls -lh "$dst" | sed 's/^/  /'
+          # SHA256SUMS-linux.txt 格式对齐 sha256sum(1) "<sha>  <filename>"
+          sha256sum "$dst" > SHA256SUMS-linux.txt
+          echo "===SHA256SUMS-linux.txt==="
+          cat SHA256SUMS-linux.txt
+
+      - name: Compute AppImage SHA256 + size (for Actions log visibility)
+        run: |
+          cd release
+          appimage="RIDEN_PowerSupply-${APP_VERSION}-linux-x86_64.AppImage"
+          sha=$(sha256sum "$appimage" | awk '{print $1}')
+          size=$(stat --printf=%s "$appimage")
+          size_mb=$(awk "BEGIN{printf \"%.2f\", $size/1024/1024}")
+          echo "AppImage: $appimage"
+          echo "SHA256: $sha"
+          echo "Size: $size bytes ($size_mb MB)"
+          # env 变量保留生成但不被 body 引用 — 与 release-windows.yml Compute step 对称
+          # body 引用会让两 workflow race 后 body 漂移，故 body 不引用任何平台特定 SHA256/size
+          echo "APPIMAGE_FILE=$appimage" >> $GITHUB_ENV
+          echo "APPIMAGE_SHA256=$sha" >> $GITHUB_ENV
+          echo "APPIMAGE_SIZE=$size" >> $GITHUB_ENV
+
+      - name: Create or update GitHub Release + upload Linux assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 'contains' 返回 boolean；gh release --prerelease 接受字符串 true/false
+          PRERELEASE: ${{ contains(env.APP_VERSION, '-') }}
+        run: |
+          set -e
+          tag="${{ github.ref_name }}"
+          title="RIDEN Power Supply ${APP_VERSION}"
+          appimage="release/RIDEN_PowerSupply-${APP_VERSION}-linux-x86_64.AppImage"
+          sums="release/SHA256SUMS-linux.txt"
+
+          # Pre-flight — 在调用 GitHub API 前确认两个产物文件真实存在
+          # 如果 fail_on_unmatched_files 等价的诊断信息要可见，shell echo ::error 比依赖 action 内部错误更可读
+          echo "=== pre-flight: verify assets ==="
+          ls -la "$appimage" || { echo "::error::missing AppImage at ${appimage}"; exit 1; }
+          ls -la "$sums" || { echo "::error::missing SHA256SUMS at ${sums}"; exit 1; }
+
+          # Body markdown — Actions 在传给 shell 前已完成 ${{ env.APP_VERSION }} / ${{ github.sha }} 插值；
+          # heredoc 用单引号 'BODY_END' 作为 delimiter 确保 shell 不再展开内容里的 $X，
+          # body_file 中的内容与 release-windows.yml 的 body 字段保持逐字一致以避免 race 漂移。
+          body_file="$(mktemp)"
+          cat > "$body_file" <<'BODY_END'
+          # RIDEN Power Supply ${{ env.APP_VERSION }}
+
+          跨平台 Release。同一 tag 下两个 workflow 各自上传本平台 assets：
+          - `release-windows.yml` → Windows x64 ZIP + `SHA256SUMS-windows.txt`
+          - `release-linux.yml`   → Linux x86_64 AppImage + `SHA256SUMS-linux.txt`
+
+          ## 安装
+
+          ### Windows x64
+
+          1. 下载 `RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip`
+          2. 解压到任意目录（顶层会得到 `RIDEN_PowerSupply/` 文件夹）
+          3. 双击 `RIDEN_PowerSupply/riden_power_supply.exe` 启动
+
+          ### Linux x86_64
+
+          ```bash
+          chmod +x RIDEN_PowerSupply-${{ env.APP_VERSION }}-linux-x86_64.AppImage
+          ./RIDEN_PowerSupply-${{ env.APP_VERSION }}-linux-x86_64.AppImage
+          ```
+
+          ## 校验完整性
+
+          ```bash
+          # Windows (Git Bash / WSL)
+          sha256sum RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
+          unzip RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
+          cd RIDEN_PowerSupply
+          sha256sum -c ../SHA256SUMS-windows.txt
+          ```
+
+          ```bash
+          # Linux
+          sha256sum -c SHA256SUMS-linux.txt
+          ```
+
+          ## 包内容
+
+          ### Windows ZIP
+
+          - `RIDEN_PowerSupply/riden_power_supply.exe` — 主程序
+          - `RIDEN_PowerSupply/flutter_windows.dll` — Flutter engine (静态 CRT)
+          - `RIDEN_PowerSupply/serialport.dll` — libserialport 运行时
+          - `RIDEN_PowerSupply/{flutter_libserialport,screen_retriever_windows,window_manager}_plugin.dll` — 3 插件
+          - `RIDEN_PowerSupply/data/app.so` — AOT 编译产物
+          - `RIDEN_PowerSupply/data/icudtl.dat` — ICU 数据
+          - `RIDEN_PowerSupply/data/flutter_assets/` — Flutter 资源
+          - `SHA256SUMS-windows.txt` — 包内单文件 SHA256 清单
+
+          ### Linux AppImage
+
+          单文件 AppImage 内嵌：
+          - Flutter engine `.so` + libserialport `.so` + 3 插件 `.so` + AOT `app.so` + `icudtl.dat` + `flutter_assets/`
+          - `.desktop` / hicolor 图标 8 尺寸 (16~512) / AppStream metainfo
+          - `AppRun` 9 行（不设任何 GTK 环境变量，保留用户系统 HiDPI 主题 / font-scaling-factor）
+          - type2-runtime (923 KB) prepend 作为 ELF loader
+
+          ## 前置依赖
+
+          ### Windows
+
+          - Windows 10 / 11 x64
+          - **VC++ Redistributable x64 (2015-2022)** — 多数 Windows 已预装；若启动报错"找不到 VCRUNTIME140.dll"，从 [Microsoft 官网](https://aka.ms/vs/17/release/vc_redist.x64.exe) 下载 `vc_redist.x64.exe` 安装
+          - **CH340 USB-Serial 驱动** — 首次插入 RIDEN 设备时 Windows Update 自动安装；离线环境从厂商安装 `CH341SER.EXE`
+
+          ### Linux
+
+          - Linux x86_64（glibc ≥ 2.31）
+          - **GTK 3** — 所有 Linux 桌面发行版预装
+          - **FUSE 2** — 运行 AppImage 需要；最小 server 镜像缺时 `apt install libfuse2` / `dnf install fuse`
+          - **CH340 / CH341 USB-serial 驱动** — `ch341` 内核模块（现代内核自带）
+          - **串口非 root 访问** — 安装 `linux/udev/99-riden-ch34x.rules`，步骤见 README "Linux 串口权限"章节
+
+          ## 源码
+
+          对应源码 commit: ${{ github.sha }}
+          BODY_END
+
+          # 创建 Release；如果Release已被 Windows workflow 先创建（race），fallback 到 upload 模式
+          # gh release create 在 Release 已存在时返回非 0；那时跳过 create，改用 upload --clobber
+          # --clobber 允许覆盖同名 assets（同名时应跳过创建，但 clobber 会重传）
+          # 本 workflow 与 release-windows.yml 的 assets 文件名完全不同，
+          # 故 clobber 行为不会覆盖 Windows 已上传的 2 个 assets
+          if gh release create "$tag" "$appimage" "$sums" \
+               --title "$title" \
+               --notes-file "$body_file" \
+               --prerelease="${PRERELEASE}" 2>&1; then
+            echo "=== Release $tag created + Linux assets uploaded ==="
+          else
+            echo "=== Release $tag already exists (race with Windows workflow), falling back to upload-only ==="
+            gh release upload "$tag" "$appimage" "$sums" --clobber
+          fi
+
+          echo "=== Release $tag final state ==="
+          gh release view "$tag"

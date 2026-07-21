@@ -152,33 +152,49 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           # tag_name 默认指向触发 tag，无需显式指定
-          name: RIDEN Power Supply ${{ env.APP_VERSION }} (Windows)
+          # name / body 与 release-linux.yml 逐字一致 — 双 workflow 同 tag 共享同一 Release，
+          # 谁后跑谁覆盖 name/body；二者一致则用户感知无变化。
+          name: RIDEN Power Supply ${{ env.APP_VERSION }}
           body: |
-            # RIDEN Power Supply ${{ env.APP_VERSION }} — Windows x64
+            # RIDEN Power Supply ${{ env.APP_VERSION }}
+
+            跨平台 Release。同一 tag 下两个 workflow 各自上传本平台 assets：
+            - `release-windows.yml` → Windows x64 ZIP + `SHA256SUMS-windows.txt`
+            - `release-linux.yml`   → Linux x86_64 AppImage + `SHA256SUMS-linux.txt`
 
             ## 安装
+
+            ### Windows x64
 
             1. 下载 `RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip`
             2. 解压到任意目录（顶层会得到 `RIDEN_PowerSupply/` 文件夹）
             3. 双击 `RIDEN_PowerSupply/riden_power_supply.exe` 启动
 
-            ## 校验完整性
+            ### Linux x86_64
 
-            ```powershell
-            # PowerShell
-            Get-FileHash RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip -Algorithm SHA256
-            # 期望值：${{ env.ZIP_SHA256 }}
+            ```bash
+            chmod +x RIDEN_PowerSupply-${{ env.APP_VERSION }}-linux-x86_64.AppImage
+            ./RIDEN_PowerSupply-${{ env.APP_VERSION }}-linux-x86_64.AppImage
             ```
 
-            或在 Git Bash / WSL：
+            ## 校验完整性
+
             ```bash
+            # Windows (Git Bash / WSL)
             sha256sum RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
             unzip RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
             cd RIDEN_PowerSupply
             sha256sum -c ../SHA256SUMS-windows.txt
             ```
 
+            ```bash
+            # Linux
+            sha256sum -c SHA256SUMS-linux.txt
+            ```
+
             ## 包内容
+
+            ### Windows ZIP
 
             - `RIDEN_PowerSupply/riden_power_supply.exe` — 主程序
             - `RIDEN_PowerSupply/flutter_windows.dll` — Flutter engine (静态 CRT)
@@ -189,15 +205,29 @@ jobs:
             - `RIDEN_PowerSupply/data/flutter_assets/` — Flutter 资源
             - `SHA256SUMS-windows.txt` — 包内单文件 SHA256 清单
 
-            ## 大小
+            ### Linux AppImage
 
-            ZIP 大小：${{ env.ZIP_SIZE }} bytes
+            单文件 AppImage 内嵌：
+            - Flutter engine `.so` + libserialport `.so` + 3 插件 `.so` + AOT `app.so` + `icudtl.dat` + `flutter_assets/`
+            - `.desktop` / hicolor 图标 8 尺寸 (16~512) / AppStream metainfo
+            - `AppRun` 9 行（不设任何 GTK 环境变量，保留用户系统 HiDPI 主题 / font-scaling-factor）
+            - type2-runtime (923 KB) prepend 作为 ELF loader
 
             ## 前置依赖
+
+            ### Windows
 
             - Windows 10 / 11 x64
             - **VC++ Redistributable x64 (2015-2022)** — 多数 Windows 已预装；若启动报错"找不到 VCRUNTIME140.dll"，从 [Microsoft 官网](https://aka.ms/vs/17/release/vc_redist.x64.exe) 下载 `vc_redist.x64.exe` 安装
             - **CH340 USB-Serial 驱动** — 首次插入 RIDEN 设备时 Windows Update 自动安装；离线环境从厂商安装 `CH341SER.EXE`
+
+            ### Linux
+
+            - Linux x86_64（glibc ≥ 2.31）
+            - **GTK 3** — 所有 Linux 桌面发行版预装
+            - **FUSE 2** — 运行 AppImage 需要；最小 server 镜像缺时 `apt install libfuse2` / `dnf install fuse`
+            - **CH340 / CH341 USB-serial 驱动** — `ch341` 内核模块（现代内核自带）
+            - **串口非 root 访问** — 安装 `linux/udev/99-riden-ch34x.rules`，步骤见 README "Linux 串口权限"章节
 
             ## 源码
 
