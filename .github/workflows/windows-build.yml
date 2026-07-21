@@ -76,7 +76,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: RIDEN_PowerSupply-windows-x64
-          path: staging/RIDEN_PowerSupply
+          # path 指向 staging 父目录（而非 staging/RIDEN_PowerSupply），
+          # 让 upload-artifact@v4 保留 RIDEN_PowerSupply/ 顶层目录在 ZIP 内，
+          # 与本地 make_windows_zip.sh 输出格式一致 — 用户解压即得到统一顶层目录。
+          path: staging
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
