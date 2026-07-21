@@ -1,0 +1,92 @@
+name: Windows Release Build
+
+# 只生成 ZIP artifact，不上传 Release，不修改源码，不做签名。
+# 触发：push 到 main 且涉及 Windows 构建相关文件；manual workflow_dispatch。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lib/**'
+      - 'windows/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.fvmrc'
+      - '.github/workflows/windows-build.yml'
+  workflow_dispatch:
+
+# 取消同分支上重复运行，省 runner minutes。
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.6'
+  CI: true
+
+jobs:
+  build:
+    name: Windows x64 Release ZIP
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build Windows Release bundle
+        run: flutter build windows --release
+
+      - name: Verify exe presence
+        shell: pwsh
+        run: |
+          $exe = "build/windows/x64/runner/Release/riden_power_supply.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::riden_power_supply.exe missing from build bundle"
+            exit 1
+          }
+          Write-Host "OK: $exe found"
+          Write-Host "===Release bundle contents==="
+          Get-ChildItem build/windows/x64/runner/Release/ | Format-Table Name, Length -AutoSize
+
+      - name: Stage bundle under RIDEN_PowerSupply/ top dir
+        shell: pwsh
+        run: |
+          $bundle = "build/windows/x64/runner/Release"
+          $staging = "staging/RIDEN_PowerSupply"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item -Path "$bundle/*" -Destination $staging -Recurse -Force
+          Write-Host "Staged $((Get-ChildItem $staging -Recurse -File).Count) files under $staging/"
+
+      - name: Create ZIP artifact
+        shell: pwsh
+        run: |
+          $short_sha = "${{ github.sha }}".Substring(0, 7)
+          $zip = "RIDEN_PowerSupply-windows-x64-${short_sha}.zip"
+          Compress-Archive `
+            -Path "staging/RIDEN_PowerSupply" `
+            -DestinationPath $zip `
+            -CompressionLevel Optimal
+          Write-Host "===Artifact==="
+          Get-Item $zip | Format-List Name, Length, FullName
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RIDEN_PowerSupply-windows-x64
+          path: RIDEN_PowerSupply-windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
