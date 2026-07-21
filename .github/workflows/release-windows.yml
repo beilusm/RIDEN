@@ -1,0 +1,211 @@
+name: Windows Tag Release
+
+# Tag 触发的 Windows Release 自动发布：构建 + 打 ZIP + 生成 SHA256SUMS + 上传到 GitHub Release。
+# 与 windows-build.yml（push 触发，仅生成 30 天过期 artifact）互补：
+#   - 本 workflow 产物永久附着到 Release，不进 artifact 30 天衰减窗口
+#   - 触发条件：push 以 v 开头的 tag（如 v1.0.0 / v1.1.0-rc.1）
+#   - 版本号从 tag 解析（v1.0.0 -> 1.0.0），不读取 env.APP_VERSION 硬编码
+# 4 处一致铁律仍要人工保证：tag 名 v1.0.0 必须与 pubspec.yaml/env_windows.sh/linux/windows runner 同步。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Tag 触发的 release 构建不取消进行中的（同 tag 重打少，跨 tag 并发保留）
+concurrency:
+  group: release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: '3.44.6'
+  CI: true
+
+permissions:
+  contents: write   # softprops/action-gh-release 需要 permission 创建 Release + 上传 assets
+
+jobs:
+  release:
+    name: Windows x64 Release (Tag-triggered)
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          # GITHUB_REF_NAME = "v1.0.0" / "v1.1.0-rc.1" 等
+          # 期望去掉前导 v 得到 "1.0.0"，与 pubspec.yaml / Runner.rc / env_windows.sh 四处一致铁律对齐
+          $raw = "${{ github.ref_name }}"
+          Write-Host "raw tag: $raw"
+          if ($raw -notmatch '^v(\S+)$') {
+            Write-Host "::error::tag '$raw' 不匹配 '^v\S+$' 期望格式（v 开头，例 v1.0.0 / v1.0.0-rc.1）"
+            exit 1
+          }
+          $version = $Matches[1]
+          Write-Host "parsed version: $version"
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: Verify tag version matches pubspec.yaml
+        shell: pwsh
+        run: |
+          # 4 处一致铁律自动化校验：tag 的 semver 必须与 pubspec.yaml version 字段 + 前部分一致。
+          # pubspec.yaml 格式："version: 1.0.0+1" 或 "version: 1.0.0" — 只比较 + 前的 semver
+          # tag 格式：v1.0.0 / v1.0.0-rc.1 / v1.1.0 — 用 env.APP_VERSION（已 strip v 前缀）
+          # 不一致即 exit 1，避免 Release 产物版本号错配。
+          $tag_version = $env:APP_VERSION
+          # 抓 pubspec.yaml 第一个 "version:" 行
+          $pubspec_line = (Get-Content pubspec.yaml | Where-Object { $_ -match '^\s*version:\s*(\S+)' } | Select-Object -First 1)
+          if (-not $pubspec_line) {
+            Write-Host "::error::pubspec.yaml 未找到 version: 字段"
+            exit 1
+          }
+          $pubspec_version = ([regex]::Match($pubspec_line, '^\s*version:\s*(\S+)')).Groups[1].Value
+          # 只取 + 前部分（SemVer build metadata 不参与比较）
+          $pubspec_semver = ($pubspec_version -split '\+', 2)[0]
+          $tag_semver = ($tag_version -split '-', 2)[0]   # tag 中 -rc.1 之类 prerelease 也不参与比较
+          Write-Host "tag version:      $tag_version"
+          Write-Host "pubspec version:  $pubspec_version"
+          Write-Host "tag semver:       $tag_semver (after strip prerelease suffix)"
+          Write-Host "pubspec semver:   $pubspec_semver (after strip +build)"
+          if ($tag_semver -ne $pubspec_semver) {
+            Write-Host "::error::Tag version $tag_semver != pubspec.yaml version $pubspec_semver"
+            exit 1
+          }
+          Write-Host "OK: tag semver matches pubspec.yaml semver ($tag_semver)"
+
+      - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build Windows Release bundle
+        run: flutter build windows --release
+
+      - name: Verify exe presence
+        shell: pwsh
+        run: |
+          $exe = "build/windows/x64/runner/Release/riden_power_supply.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Host "::error::riden_power_supply.exe missing from build bundle"
+            exit 1
+          }
+          Write-Host "OK: $exe found"
+          Get-ChildItem build/windows/x64/runner/Release/ | Format-Table Name, Length -AutoSize
+
+      - name: Stage bundle under RIDEN_PowerSupply/ + Create ZIP + Generate SHA256SUMS
+        shell: pwsh
+        run: |
+          $version = $env:APP_VERSION
+          $bundle = "build/windows/x64/runner/Release"
+          $staging = "staging/RIDEN_PowerSupply"
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item -Path "$bundle/*" -Destination $staging -Recurse -Force
+
+          # 生成 SHA256SUMS-windows.txt：每文件一行 "<sha> *RIDEN_PowerSupply/<rel>"
+          $sums = "staging/SHA256SUMS-windows.txt"
+          $lines = @()
+          Get-ChildItem $staging -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring((Resolve-Path $staging).Path.Length + 1).Replace('\','/')
+            $sha = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
+            $lines += "$sha *RIDEN_PowerSupply/$rel"
+          }
+          $lines | Out-File -FilePath $sums -Encoding ascii -NoNewline:$false
+          Write-Host "===SHA256SUMS-windows.txt ($($lines.Count) entries)==="
+          Get-Content $sums
+
+          # 创建分发包 ZIP：顶层 RIDEN_PowerSupply/ + SHA256SUMS-windows.txt 同级并列
+          # 与本地 make_windows_zip.sh 行为对齐 — SHA256SUMS 不污染 bundle 内部
+          $zip = "RIDEN_PowerSupply-${version}-windows-x64.zip"
+          Compress-Archive `
+            -Path "staging/RIDEN_PowerSupply", "staging/SHA256SUMS-windows.txt" `
+            -DestinationPath $zip `
+            -CompressionLevel Optimal
+          Write-Host "===Artifact ZIP==="
+          Get-Item $zip | Format-List Name, Length, FullName
+
+      - name: Compute ZIP-level SHA256 (for release notes)
+        id: zip_sha
+        shell: pwsh
+        run: |
+          $zip = "RIDEN_PowerSupply-${env:APP_VERSION}-windows-x64.zip"
+          $sha = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          Write-Host "ZIP: $zip"
+          Write-Host "SHA256: $sha"
+          Write-Host "Size: $size bytes ($([math]::Round($size/1MB,2)) MB)"
+          "ZIP_SHA256=$sha" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+          "ZIP_SIZE=$size" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          # tag_name 默认指向触发 tag，无需显式指定
+          name: RIDEN Power Supply ${{ env.APP_VERSION }} (Windows)
+          body: |
+            # RIDEN Power Supply ${{ env.APP_VERSION }} — Windows x64
+
+            ## 安装
+
+            1. 下载 `RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip`
+            2. 解压到任意目录（顶层会得到 `RIDEN_PowerSupply/` 文件夹）
+            3. 双击 `RIDEN_PowerSupply/riden_power_supply.exe` 启动
+
+            ## 校验完整性
+
+            ```powershell
+            # PowerShell
+            Get-FileHash RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip -Algorithm SHA256
+            # 期望值：${{ env.ZIP_SHA256 }}
+            ```
+
+            或在 Git Bash / WSL：
+            ```bash
+            sha256sum RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
+            unzip RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
+            cd RIDEN_PowerSupply
+            sha256sum -c ../SHA256SUMS-windows.txt
+            ```
+
+            ## 包内容
+
+            - `RIDEN_PowerSupply/riden_power_supply.exe` — 主程序
+            - `RIDEN_PowerSupply/flutter_windows.dll` — Flutter engine (静态 CRT)
+            - `RIDEN_PowerSupply/serialport.dll` — libserialport 运行时
+            - `RIDEN_PowerSupply/{flutter_libserialport,screen_retriever_windows,window_manager}_plugin.dll` — 3 插件
+            - `RIDEN_PowerSupply/data/app.so` — AOT 编译产物
+            - `RIDEN_PowerSupply/data/icudtl.dat` — ICU 数据
+            - `RIDEN_PowerSupply/data/flutter_assets/` — Flutter 资源
+            - `SHA256SUMS-windows.txt` — 包内单文件 SHA256 清单
+
+            ## 大小
+
+            ZIP 大小：${{ env.ZIP_SIZE }} bytes
+
+            ## 前置依赖
+
+            - Windows 10 / 11 x64
+            - **VC++ Redistributable x64 (2015-2022)** — 多数 Windows 已预装；若启动报错"找不到 VCRUNTIME140.dll"，从 [Microsoft 官网](https://aka.ms/vs/17/release/vc_redist.x64.exe) 下载 `vc_redist.x64.exe` 安装
+            - **CH340 USB-Serial 驱动** — 首次插入 RIDEN 设备时 Windows Update 自动安装；离线环境从厂商安装 `CH341SER.EXE`
+
+            ## 源码
+
+            对应源码 commit: ${{ github.sha }}
+          files: |
+            RIDEN_PowerSupply-${{ env.APP_VERSION }}-windows-x64.zip
+            staging/SHA256SUMS-windows.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(env.APP_VERSION, '-') }}   # 1.0.0-rc.1 -> prerelease; 1.0.0 -> release
+          generate_release_notes: false
