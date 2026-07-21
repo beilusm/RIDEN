@@ -1,0 +1,37 @@
+# RIDEN Power Supply - USB serial access for CH340 / CH341 adapter
+#
+# VID:PID  1a86:7523  - CH340 (used by most RIDEN supplies and programmers)
+# VID:PID  1a86:7522  - CH341 (variant; included for completeness)
+#
+# This rule:
+#   1. Creates a stable symlink /dev/riden_serial -> /dev/ttyUSBn so the
+#      application can locate the device consistently across re-plugs.
+#   2. Grants read/write to everyone (MODE="0666") so non-root users do not
+#      need to be added to a serial group whose name varies across distros
+#      (dialout on Debian/Arch/Ubuntu, uucp on openSUSE, tty on RHEL).
+#      System administrators who prefer group-based access may replace
+#      MODE="0666" with GROUP="dialout" (or the local equivalent) and
+#      MODE="0660".
+#   3. Instructs ModemManager to ignore this device so it does not probe the
+#      power supply with AT commands on plug-in (would otherwise cause a
+#      brief exclusive open of the port and interfere with Modbus RTU).
+#
+# Installation:
+#   sudo cp 99-riden-ch34x.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --action=add \
+#       --subsystem-match=tty --attr-match=idVendor=1a86
+#   (Then unplug and re-plug the CH340 adapter, or reboot.)
+#
+# After installation the device should appear as both /dev/ttyUSBn and
+# /dev/riden_serial, both directly readable/writable without sudo.
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+    ENV{ID_MM_DEVICE_IGNORE}="1", \
+    MODE="0666", \
+    SYMLINK+="riden_serial"
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7522", \
+    ENV{ID_MM_DEVICE_IGNORE}="1", \
+    MODE="0666", \
+    SYMLINK+="riden_serial"

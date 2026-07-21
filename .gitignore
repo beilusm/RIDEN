@@ -1,0 +1,72 @@
+# ── Flutter / Dart / Pub 构建产物 ────────────────────────────────────────
+/build/
+/.dart_tool/
+/.flutter-plugins
+/.flutter-plugins-dependencies
+/.packages
+/.pub-cache/
+/.pub/
+
+# 桌面平台 ephemeral 与自动生成注册器（flutter pub get / pre-build 生成）
+/linux/flutter/ephemeral/
+/macos/Flutter/ephemeral/
+/macos/Flutter/GeneratedPluginRegistrant.swift
+/windows/flutter/ephemeral/
+/windows/flutter/generated_plugin_registrant.cc
+/windows/flutter/generated_plugin_registrant.h
+/windows/flutter/generated_plugins.cmake
+
+# 应用项目应 commit pubspec.lock，故不 ignore。
+
+# ── IDE / 编辑器 ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+*.swp
+.DS_Store
+
+# ── FVM 版本缓存（团队锁定版本靠 .fvmrc / pubspec.lock 入库）───────────────
+.fvm/
+
+# ── Phase 3 发布工程构建产物（不入库）────────────────────────────────────────
+# /packaging/tools/   — fetch_tools.sh 下载的工具二进制（linuxdeploy 等）
+# /release/           — 临时构建产物与最终交付物（AppDir / AppImage / SHA256SUMS / ZIP）
+# AppImage / zsync    — 避免 AppImage 意外出现在仓库根
+# Windows ZIP         — Windows Release 交付物
+/packaging/tools/
+/release/
+*.AppImage
+*.AppImage.zsync
+# Windows release zip（与 release/ 二选一即可，此处兜底防止 ZIP 写到仓库根）
+RIDEN_PowerSupply-*-windows-*.zip
+SHA256SUMS-windows.txt
+
+# ── 系统缓存 / 媒体文件（兜底）─────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+
+# ── 通用分发包目录兜底 ─────────────────────────────────────────────────────
+/dist/
+*.zip
+
+# ── Windows 编译产物兜底（源码目录本无，防意外提交）─────────────────────────
+*.exe
+*.dll
+*.pdb
+
+# ── 敏感文件兜底 ────────────────────────────────────────────────────────────
+.env
+.env.*
+*.key
+*.pem
+*.p12
+credentials
+*.token
+
+# ── 日志 / 临时 / 备份 ──────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+*~

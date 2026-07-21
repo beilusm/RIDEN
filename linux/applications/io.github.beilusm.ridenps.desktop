@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=RIDEN Power Supply
+GenericName=Programmable Power Supply Control
+Comment=Desktop control software for RIDEN programmable power supplies via Modbus RTU
+Comment[zh_CN]=RIDEN 数控电源桌面控制软件
+Exec=riden_power_supply
+Icon=io.github.beilusm.ridenps
+Terminal=false
+Categories=Utility;Engineering;Electronics;
+Keywords=power supply;psu;riden;modbus;serial;oscilloscope;
+StartupNotify=true
+StartupWMClass=io.github.beilusm.ridenps

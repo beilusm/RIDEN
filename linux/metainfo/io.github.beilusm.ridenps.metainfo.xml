@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Freedesktop AppStream metainfo (https://www.freedesktop.org/software/appstream/docs/) -->
+<component type="desktop-application">
+  <id>io.github.beilusm.ridenps</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>RIDEN Power Supply</name>
+  <summary>Desktop control software for RIDEN programmable power supplies</summary>
+  <summary xml:lang="zh_CN">RIDEN 数控电源桌面控制软件</summary>
+  <developer id="io.github.beilusm">
+    <name>beilusm</name>
+  </developer>
+  <description>
+    <p>
+      RIDEN Power Supply is a cross-platform desktop application for controlling
+      RIDEN programmable power supplies via the Modbus RTU protocol over a
+      CH340 USB-to-serial converter (115200 baud, 8N1, device address 0x01).
+    </p>
+    <p>
+      Features include real-time V/A/W waveform display, setpoint adjustment,
+      output toggle, OVP/OCP protection monitoring, 10 memory preset slots
+      (M0–M9) management, and a schema-driven register viewer for advanced
+      diagnostics.
+    </p>
+  </description>
+  <icon type="stock">io.github.beilusm.ridenps</icon>
+
+  <categories>
+    <category>Utility</category>
+    <category>Engineering</category>
+    <category>Electronics</category>
+  </categories>
+
+  <url type="homepage">https://github.com/beilusm/RIDEN</url>
+  <url type="bugtracker">https://github.com/beilusm/RIDEN/issues</url>
+  <url type="vcs-browser">https://github.com/beilusm/RIDEN</url>
+
+  <launchable type="desktop-id">io.github.beilusm.ridenps.desktop</launchable>
+
+  <provides>
+    <binary>riden_power_supply</binary>
+    <mediatype>text/plain</mediatype>
+  </provides>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <recommends>
+    <display_length compare="ge">1024</display_length>
+  </recommends>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">none</content_attribute>
+    <content_attribute id="violence-fantasy">none</content_attribute>
+    <content_attribute id="violence-realistic">none</content_attribute>
+    <content_attribute id="violence-bloodshed">none</content_attribute>
+    <content_attribute id="violence-sexual">none</content_attribute>
+    <content_attribute id="violence-desecration">none</content_attribute>
+    <content_attribute id="violence-slavery">none</content_attribute>
+    <content_attribute id="violence-worship">none</content_attribute>
+    <content_attribute id="sex-nudity">none</content_attribute>
+    <content_attribute id="sex-homosexuality">none</content_attribute>
+    <content_attribute id="language-profanity">none</content_attribute>
+    <content_attribute id="language-humor">none</content_attribute>
+    <content_attribute id="language-discrimination">none</content_attribute>
+    <content_attribute id="social-chat">none</content_attribute>
+    <content_attribute id="social-info">none</content_attribute>
+    <content_attribute id="social-contacts">none</content_attribute>
+    <content_attribute id="social-location">none</content_attribute>
+    <content_attribute id="social-audio">none</content_attribute>
+    <content_attribute id="money-purchasing">none</content_attribute>
+    <content_attribute id="money-gambling">none</content_attribute>
+    <content_attribute id="money-advertising">none</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="1.0.0" date="2026-07-19">
+      <description>
+        <p>Initial production release.</p>
+        <ul>
+          <li>Real-time V/A/W waveform display</li>
+          <li>Setpoint adjustment and output toggle</li>
+          <li>OVP / OCP / OTP protection status monitoring</li>
+          <li>10 memory preset slots (M0–M9) management</li>
+          <li>Schema-driven register viewer</li>
+          <li>Modbus RTU communication via CH340 USB-serial at 115200-8-N-1</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>
