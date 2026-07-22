@@ -140,7 +140,7 @@ class BottomStatus extends StatelessWidget {
     return InkWell(
       onTap: vals != null
           ? () {
-              provider.loadSlot(index);
+              provider.quickSwitch(index);
               Navigator.of(ctx).pop();
             }
           : null,
@@ -175,7 +175,7 @@ class BottomStatus extends StatelessWidget {
                   ? null
                   : TextButton(
                       onPressed: () {
-                        provider.loadSlot(index);
+                        provider.quickSwitch(index);
                         Navigator.of(ctx).pop();
                       },
                       style: TextButton.styleFrom(

@@ -275,8 +275,114 @@ class RegisterTable {
   static final Map<int, RegisterDefinition> _confirmed = _buildConfirmed();
 
   static Map<int, RegisterDefinition> _buildConfirmed() => {
-    // ── Measurement: voltage / current (multi-path confirmed) ─────
-    8: RegisterDefinition(
+    // ── HR[0..19]: device register map (user-confirmed) ───────────
+    // Authoritative definitions for the first 20 holding registers
+    // supplied directly from the device register map.  These entries
+    // use [RegisterSource.datasheet].
+    //
+    // Notes:
+    // - HR[3] (Firmware Version) and HR[7] (System Temp F) disagree
+    //   with the legacy worker hard-coded decoders, which read HR[3]
+    //   as aux-voltage /10 V and HR[7] as internal-state.  The Modbus
+    //   communication layer is intentionally left untouched per the
+    //   “不修改 Modbus 通信架构” rule; the worker code paths are now
+    //   inconsistent with the schema and flagged for a separate
+    //   follow-up alignment task.
+    // - HR[14] (Input Voltage) keeps its `conflict` flag because the
+    //   codebase still has two scale decoders (/100 and /10) and the
+    //   datasheet row does not specify a scale.
+    // - HR[15] / HR[17] / HR[18] previously carried `conflict` flags
+    //   because their bit layout was unconfirmed; the datasheet
+    //   confirms the enum/boolean semantics, so the flags are cleared
+    //   here.  The `register_conflicts.dart` ledger is intentionally
+    //   left untouched.
+    0: const RegisterDefinition(
+      address: 0,
+      name: 'Model ID',
+      description: '产品型号',
+      access: RegisterAccess.ro,
+      type: RegisterType.uint16,
+      category: RegisterCategory.info,
+      dashboardField: 'modelId',
+      polling: RegisterPolling.background,
+      source: RegisterSource.datasheet,
+    ),
+    1: const RegisterDefinition(
+      address: 1,
+      name: 'Serial Number Hi',
+      description: '产品序列号高16位',
+      access: RegisterAccess.ro,
+      type: RegisterType.uint16,
+      category: RegisterCategory.info,
+      polling: RegisterPolling.background,
+      source: RegisterSource.datasheet,
+    ),
+    2: const RegisterDefinition(
+      address: 2,
+      name: 'Serial Number Lo',
+      description: '产品序列号低16位',
+      access: RegisterAccess.ro,
+      type: RegisterType.uint16,
+      category: RegisterCategory.info,
+      polling: RegisterPolling.background,
+      source: RegisterSource.datasheet,
+    ),
+    3: const RegisterDefinition(
+      address: 3,
+      name: 'Firmware Version',
+      description: '产品固件版本',
+      access: RegisterAccess.ro,
+      type: RegisterType.uint16,
+      category: RegisterCategory.info,
+      polling: RegisterPolling.background,
+      source: RegisterSource.datasheet,
+    ),
+    4: const RegisterDefinition(
+      address: 4,
+      name: 'System Temp C Sign',
+      description: '0=正，1=负',
+      access: RegisterAccess.ro,
+      type: RegisterType.enumKind,
+      enumValues: {0: '正', 1: '负'},
+      category: RegisterCategory.measurement,
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    5: const RegisterDefinition(
+      address: 5,
+      name: 'System Temp C',
+      description: '系统摄氏温度数值',
+      access: RegisterAccess.ro,
+      type: RegisterType.int16,
+      unit: '°C',
+      category: RegisterCategory.measurement,
+      dashboardField: 'temperature',
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    6: const RegisterDefinition(
+      address: 6,
+      name: 'System Temp F Sign',
+      description: '0=正，1=负',
+      access: RegisterAccess.ro,
+      type: RegisterType.enumKind,
+      enumValues: {0: '正', 1: '负'},
+      category: RegisterCategory.measurement,
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    7: const RegisterDefinition(
+      address: 7,
+      name: 'System Temp F',
+      description: '系统华氏温度数值',
+      access: RegisterAccess.ro,
+      type: RegisterType.int16,
+      unit: '°F',
+      category: RegisterCategory.measurement,
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    8: const RegisterDefinition(
       address: 8,
       name: 'Set Voltage',
       description: '电压设定值',
@@ -290,7 +396,7 @@ class RegisterTable {
       writeRange: RegisterWriteRange(0, 62),
       source: RegisterSource.codeConfirmed,
     ),
-    9: RegisterDefinition(
+    9: const RegisterDefinition(
       address: 9,
       name: 'Set Current',
       description: '电流设定值',
@@ -304,7 +410,7 @@ class RegisterTable {
       writeRange: RegisterWriteRange(0, 6.2),
       source: RegisterSource.codeConfirmed,
     ),
-    10: RegisterDefinition(
+    10: const RegisterDefinition(
       address: 10,
       name: 'Output Voltage',
       description: '实际输出电压',
@@ -317,7 +423,7 @@ class RegisterTable {
       polling: RegisterPolling.fast,
       source: RegisterSource.codeConfirmed,
     ),
-    11: RegisterDefinition(
+    11: const RegisterDefinition(
       address: 11,
       name: 'Output Current',
       description: '实际输出电流',
@@ -330,9 +436,27 @@ class RegisterTable {
       polling: RegisterPolling.fast,
       source: RegisterSource.codeConfirmed,
     ),
-
-    // ── Measurement: conflict flagged (HR14 /100 vs /10) ──────────
-    14: RegisterDefinition(
+    12: const RegisterDefinition(
+      address: 12,
+      name: 'Output Power Hi',
+      description: '输出功率高16位',
+      access: RegisterAccess.ro,
+      type: RegisterType.uint16,
+      category: RegisterCategory.measurement,
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    13: const RegisterDefinition(
+      address: 13,
+      name: 'Output Power Lo',
+      description: '输出功率低16位',
+      access: RegisterAccess.ro,
+      type: RegisterType.uint16,
+      category: RegisterCategory.measurement,
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    14: const RegisterDefinition(
       address: 14,
       name: 'Input Voltage',
       description: '输入电压 — 代码同时存在 /100 与 /10 两种解码，未定',
@@ -345,6 +469,77 @@ class RegisterTable {
       polling: RegisterPolling.fast,
       conflict: true,
       source: RegisterSource.inferred,
+    ),
+    15: const RegisterDefinition(
+      address: 15,
+      name: 'Key Lock',
+      description: '0=未锁定，1=键盘锁定',
+      access: RegisterAccess.rw,
+      type: RegisterType.enumKind,
+      enumValues: {0: '未锁定', 1: '键盘锁定'},
+      category: RegisterCategory.system,
+      polling: RegisterPolling.fast,
+      writeRange: RegisterWriteRange(0, 1),
+      source: RegisterSource.datasheet,
+    ),
+    16: const RegisterDefinition(
+      address: 16,
+      name: 'Protection Status',
+      description: '0=正常，1=OVP，2=OCP，3=OTP',
+      access: RegisterAccess.ro,
+      type: RegisterType.enumKind,
+      enumValues: {0: '正常', 1: 'OVP', 2: 'OCP', 3: 'OTP'},
+      category: RegisterCategory.protection,
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    17: const RegisterDefinition(
+      address: 17,
+      name: 'CC/CV Mode',
+      description: '0=CV，1=CC',
+      access: RegisterAccess.ro,
+      type: RegisterType.enumKind,
+      enumValues: {0: 'CV', 1: 'CC'},
+      category: RegisterCategory.status,
+      dashboardField: 'isConstantCurrent',
+      polling: RegisterPolling.fast,
+      source: RegisterSource.datasheet,
+    ),
+    18: const RegisterDefinition(
+      address: 18,
+      name: 'Output Enable',
+      description: '0=关闭，1=打开',
+      access: RegisterAccess.rw,
+      type: RegisterType.enumKind,
+      enumValues: {0: '关闭', 1: '打开'},
+      category: RegisterCategory.status,
+      dashboardField: 'outputEnabled',
+      polling: RegisterPolling.fast,
+      writeRange: RegisterWriteRange(0, 1),
+      source: RegisterSource.datasheet,
+    ),
+    19: const RegisterDefinition(
+      address: 19,
+      name: 'Quick Preset',
+      description: 'M0~M9',
+      access: RegisterAccess.rw,
+      type: RegisterType.enumKind,
+      enumValues: {
+        0: 'M0',
+        1: 'M1',
+        2: 'M2',
+        3: 'M3',
+        4: 'M4',
+        5: 'M5',
+        6: 'M6',
+        7: 'M7',
+        8: 'M8',
+        9: 'M9',
+      },
+      category: RegisterCategory.status,
+      polling: RegisterPolling.manual,
+      writeRange: RegisterWriteRange(0, 9),
+      source: RegisterSource.datasheet,
     ),
 
     // ── Protection: top-level OVP / OCP ───────────────────────────
@@ -382,98 +577,7 @@ class RegisterTable {
       source: RegisterSource.codeConfirmed,
     ),
 
-    // ── Status / control (single-path inferred, kept as placeholder+conflict) ──
-    // These registers are read as bool (==1) in the worker, but the
-    // full bit semantics are unconfirmed.  Left as unknown so the UI
-    // refuses to write; conflict flag surfaces the gap.
-    15: RegisterDefinition(
-      address: 15,
-      name: 'Status Flags',
-      description: '状态位图 — bit 含义未确认',
-      access: RegisterAccess.ro,
-      type: RegisterType.bitmap,
-      category: RegisterCategory.status,
-      dashboardField: 'statusFlags',
-      polling: RegisterPolling.fast,
-      conflict: true,
-      source: RegisterSource.inferred,
-    ),
-    17: RegisterDefinition(
-      address: 17,
-      name: 'CC/CV Mode',
-      description: '1=恒流模式 — 寄存器全宽含义未确认',
-      access: RegisterAccess.ro,
-      type: RegisterType.boolean,
-      category: RegisterCategory.status,
-      dashboardField: 'isConstantCurrent',
-      polling: RegisterPolling.fast,
-      conflict: true,
-      source: RegisterSource.inferred,
-    ),
-    18: RegisterDefinition(
-      address: 18,
-      name: 'Output Enable',
-      description: '0=关闭 输出 / 1=开启输出 — 寄存器全宽含义未确认',
-      access: RegisterAccess.rw,
-      type: RegisterType.boolean,
-      category: RegisterCategory.status,
-      dashboardField: 'outputEnabled',
-      polling: RegisterPolling.fast,
-      writeRange: RegisterWriteRange(0, 1),
-      conflict: true,
-      source: RegisterSource.inferred,
-    ),
-
-    // ── Info / measurement (single-path inferred) ────────────────
-    0: RegisterDefinition(
-      address: 0,
-      name: 'Model ID',
-      description: '设备型号编号',
-      access: RegisterAccess.ro,
-      type: RegisterType.uint16,
-      category: RegisterCategory.info,
-      dashboardField: 'modelId',
-      polling: RegisterPolling.background,
-      source: RegisterSource.inferred,
-    ),
-    3: RegisterDefinition(
-      address: 3,
-      name: 'Aux Voltage',
-      description: '辅助输出电压',
-      access: RegisterAccess.ro,
-      type: RegisterType.uint16,
-      scale: 10,
-      unit: 'V',
-      category: RegisterCategory.measurement,
-      dashboardField: 'auxVoltage',
-      polling: RegisterPolling.background,
-      source: RegisterSource.codeConfirmed,
-    ),
-    5: RegisterDefinition(
-      address: 5,
-      name: 'Temperature',
-      description: '机箱温度',
-      access: RegisterAccess.ro,
-      type: RegisterType.int16,
-      unit: '°C',
-      category: RegisterCategory.measurement,
-      dashboardField: 'temperature',
-      polling: RegisterPolling.fast,
-      source: RegisterSource.inferred,
-    ),
-    7: RegisterDefinition(
-      address: 7,
-      name: 'Internal State',
-      description: '设备内部状态码',
-      access: RegisterAccess.ro,
-      type: RegisterType.uint16,
-      category: RegisterCategory.status,
-      dashboardField: 'internalState',
-      polling: RegisterPolling.background,
-      source: RegisterSource.inferred,
-    ),
-
-    // ── Cumulative counters (single-path inferred) ───────────────
+    // ── Cumulative counters / system (single-path inferred) ───────
     39: RegisterDefinition(
       address: 39,
       name: 'Capacity',

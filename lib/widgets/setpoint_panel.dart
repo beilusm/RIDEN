@@ -115,7 +115,7 @@ class SetpointPanel extends StatelessWidget {
                   p.slotValues(i)?.map((v) => v.toStringAsFixed(2)).join(' / ') ?? '--',
                   style: AppTheme.bodyMono.copyWith(fontSize: 10),
                 ),
-                onTap: () { p.loadSlot(i); Navigator.pop(c); },
+                onTap: () { p.quickSwitch(i); Navigator.pop(c); },
               ),
             ),
           ),

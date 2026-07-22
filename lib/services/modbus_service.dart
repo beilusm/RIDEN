@@ -36,8 +36,29 @@ abstract class ModbusService {
   /// Convenience: toggle output on/off (HR[18]).
   Future<void> setOutput(bool enable);
 
+  /// Convenience: trigger a hardware quick-switch to memory slot
+  /// M0..M9 by writing the slot index to HR[19] (0x0013).
+  ///
+  /// Per the device datasheet, writing a value 0..9 to HR[19] causes
+  /// the device firmware to load the corresponding preset's Vset /
+  /// Iset / OVP / OCP into the active registers.  This is the
+  /// fast path — no extra round-trips to read the slot first.
+  ///
+  /// The legacy [loadMemorySlot] path (read slot → write each field
+  /// back via [setVoltage]/[setOCP]/…) is preserved for backwards
+  /// compatibility.  Use [quickSwitch] for new code paths.
+  Future<void> quickSwitch(int slotIndex);
+
   /// Convenience: load a memory slot to registers HR[8-9] and
   /// HR[80+n*4+2] / HR[80+n*4+3] for OVP/OCP.
+  ///
+  /// Deprecated since Phase B — the verified device protocol supports
+  /// a one-shot hardware switch via [quickSwitch] (write HR[19] = Mx).
+  /// New code must use [quickSwitch].  This implementation is
+  /// preserved for fallback / A/B comparison and is not called from
+  /// any UI path anymore.
+  @Deprecated('Use quickSwitch(slotIndex) instead — Phase B verified '
+      'HR[19] as the device-side quick-switch entry point')
   Future<void> loadMemorySlot(int slotIndex);
 
   /// Save current set-points (Vset, Iset, OVP, OCP) into a memory slot.

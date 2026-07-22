@@ -231,11 +231,11 @@ class _RegisterPageState extends State<RegisterPage> {
       ),
       child: Row(
         children: [
-          // ADDR
+          // ADDR — displayed as 0xXXXX (4-digit uppercase hex).
           SizedBox(
             width: 60,
             child: Text(
-              'HR${def.address.toString().padLeft(3, '0')}',
+              '0x${def.address.toRadixString(16).toUpperCase().padLeft(4, '0')}',
               style: AppTheme.bodyMono.copyWith(
                 fontSize: 10,
                 color: changed
@@ -450,7 +450,7 @@ class _RegisterPageState extends State<RegisterPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Edit HR${def.address.toString().padLeft(3, '0')}',
+              'Edit 0x${def.address.toRadixString(16).toUpperCase().padLeft(4, '0')}',
               style: AppTheme.digitalValue.copyWith(fontSize: 16),
             ),
             const SizedBox(height: 2),

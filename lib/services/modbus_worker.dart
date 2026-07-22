@@ -122,19 +122,25 @@ class _ModbusWorkerCore {
         'timestamp': d.timestamp.millisecondsSinceEpoch,
         'modelId': d.modelId,
         'inputVoltage': d.inputVoltage,
+        // NOTE: 'auxVoltage' / 'statusFlags' kept in the wire map for
+        // backwards compatibility with cached snapshots — they are no
+        // longer populated and stay at their defaults (0 / 0).
         'auxVoltage': d.auxVoltage,
         'temperature': d.temperature,
-        'internalState': d.internalState,
+        'systemTempF': d.systemTempF,
         'setVoltage': d.setVoltage,
         'setCurrent': d.setCurrent,
         'outputVoltage': d.outputVoltage,
         'outputCurrent': d.outputCurrent,
         'inputVoltageAlt': d.inputVoltageAlt,
         'statusFlags': d.statusFlags,
+        'keyLock': d.keyLock,
+        'protectionStatus': d.protectionStatus,
         'isConstantCurrent': d.isConstantCurrent,
         'outputEnabled': d.outputEnabled,
         'capacityMah': d.capacityMah,
         'energyMwh': d.energyMwh,
+        'firmwareVersion': d.firmwareVersion,
         'ovp': d.ovp,
         'ocp': d.ocp,
         'commStatus': d.commStatus.index,
@@ -198,15 +204,23 @@ class _ModbusWorkerCore {
       _reply(id, 'result', true);
       _resumeTieredPolling();
 
-      // Init read
+      // Init read (HR[0..7]) — model ID, serial number (Hi/Lo),
+      // firmware version, system temperature C sign/value,
+      // system temperature F value.
       _enqueueReadBackground(0, 8, (regs) {
         if (regs != null && regs.length >= 8) {
           final d = PowerSupplyData(
             timestamp: DateTime.now(),
             modelId: regs[0],
-            auxVoltage: regs[3] / 10.0,
+            // HR[3] = firmware version (uint16 RO, no scaling).
+            firmwareVersion: regs[3],
+            // HR[5] = system temperature °C (datasheet sign in HR[4]).
             temperature: regs[5].toDouble(),
-            internalState: regs[7],
+            // HR[7] = system temperature °F (int16 signed).
+            // toSigned(16) handles negative temperatures; the wire
+            // value is a 16-bit unsigned that we reinterpret as two's
+            // complement.
+            systemTempF: regs[7].toSigned(16).toDouble(),
           );
           _replyData(d);
         }
@@ -277,7 +291,11 @@ class _ModbusWorkerCore {
         outputVoltage: inRange(5) ? r(5) / 100.0 : 0,
         outputCurrent: inRange(6) ? r(6) / 1000.0 : 0,
         inputVoltage: inRange(9) ? r(9) / 100.0 : 0,
-        statusFlags: inRange(10) ? r(10) : 0,
+        // r(10) = HR[15] — Key Lock (enum R/W).  0=unlocked, 1=locked.
+        keyLock: inRange(10) ? r(10) : 0,
+        // r(11) = HR[16] — Protection Status (enum RO).
+        // 0=normal, 1=OVP, 2=OCP, 3=OTP.
+        protectionStatus: inRange(11) ? r(11) : 0,
         isConstantCurrent: inRange(12) ? r(12) == 1 : false,
         outputEnabled: inRange(13) ? r(13) == 1 : false,
         capacityMah: inRange(34) ? r(34) : 0,
@@ -718,9 +736,13 @@ class ModbusWorkerHandle {
           DateTime.fromMillisecondsSinceEpoch(m['timestamp'] as int),
       modelId: m['modelId'] as int? ?? 0,
       inputVoltage: (m['inputVoltage'] as num?)?.toDouble() ?? 0,
+      // Backwards-compat: tolerate old snapshots that still carry
+      // 'internalState' instead of 'systemTempF'.
+      systemTempF: (m['systemTempF'] as num?)?.toDouble() ??
+          (m['internalState'] as num?)?.toDouble() ??
+          0,
       auxVoltage: (m['auxVoltage'] as num?)?.toDouble() ?? 0,
       temperature: (m['temperature'] as num?)?.toDouble() ?? 0,
-      internalState: m['internalState'] as int? ?? 0,
       setVoltage: (m['setVoltage'] as num?)?.toDouble() ?? 0,
       setCurrent: (m['setCurrent'] as num?)?.toDouble() ?? 0,
       outputVoltage: (m['outputVoltage'] as num?)?.toDouble() ?? 0,
@@ -728,10 +750,13 @@ class ModbusWorkerHandle {
       inputVoltageAlt:
           (m['inputVoltageAlt'] as num?)?.toDouble() ?? 0,
       statusFlags: m['statusFlags'] as int? ?? 0,
+      keyLock: m['keyLock'] as int? ?? 0,
+      protectionStatus: m['protectionStatus'] as int? ?? 0,
       isConstantCurrent: m['isConstantCurrent'] as bool? ?? false,
       outputEnabled: m['outputEnabled'] as bool? ?? false,
       capacityMah: m['capacityMah'] as int? ?? 0,
       energyMwh: m['energyMwh'] as int? ?? 0,
+      firmwareVersion: m['firmwareVersion'] as int? ?? 0,
       ovp: (m['ovp'] as num?)?.toDouble() ?? 0,
       ocp: (m['ocp'] as num?)?.toDouble() ?? 0,
       commStatus: CommStatus.values[m['commStatus'] as int? ?? 0],

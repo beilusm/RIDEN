@@ -861,3 +861,108 @@ Releases:   v1.0.1 (Latest, 4 assets) / v1.0.0 (Windows-only, 历史)
 工作树:     clean
 ```
 
+---
+
+## Phase A / A.5 / B — Register Schema 对齐 + HR19 quickSwitch 迁移
+
+### 完成时间线
+
+- **Phase A — Register Schema 与 Worker 解码一致性修复**：完成
+  - HR3：`auxVoltage` → `firmwareVersion` (uint16 RO，无 scale)
+  - HR7：`internalState` → `systemTempF` (int16 `.toSigned(16)` 处理负温度)
+  - HR15：`statusFlags` (`@Deprecated`) → `keyLock` (enum R/W {0,1})
+  - HR16：未实现 → `protectionStatus` (enum RO {0=正常,1=OVP,2=OCP,3=OTP})
+  - HR17/HR18：保留 bool 表示（与 enum 语义兼容，不改）
+  - `auxVoltage` / `statusFlags` 字段保留 `@Deprecated` 不删，保证向后兼容
+  - `quickSwitch(slot)` 接口 + SerialImpl + Mock 实现加入
+  - 旧 `loadMemorySlot` 实现完整保留
+
+- **Phase A.5 — HR19 硬件数据组切换验证**：✓ PASS（真实设备实测）
+  - 验证脚本：`test/phasea5_quickswitch_verify.dart`
+  - smoke 测试默认运行（验证流水线本身）；hardware 测试 gate by `PHASEA5_HW=1` 环境变量
+  - 硬件实测结果（用户运行确认）：
+    - HR19 0x0000 → 0x0001（写入成功，回读一致）
+    - HR8 Vset：4.20V → 5.00V（与 M1 preset 一致）
+    - HR9 Iset：6.100A → 5.000A（与 M1 preset 一致）
+  - 结论：HR19 (0x0013) 是设备硬件 Memory Slot quick switch 入口，写 HR19=Mx 后设备固件自动加载对应 Mx 保存参数到当前工作寄存器。
+
+- **Phase B — UI 迁移到 quickSwitch**：完成
+  - `loadSlot()` provider 方法加 `@Deprecated`，UI 不再调用
+  - `loadMemorySlot()` service 方法加 `@Deprecated`（abstract + Serial + Mock）
+  - `bottom_status.dart` / `setpoint_panel.dart` 全部 UI 调用点改为 `quickSwitch()`
+  - `PowerSupplyProvider.quickSwitch(slot)` 实现：
+    1. 写 HR19 = slot.clamp(0,9)
+    2. 等 600 ms（设备 firmware 加载预设）
+    3. `readRawRegisters` 读 HR0..HR120
+    4. `_data.copyWith` 同步 setVoltage/setCurrent/keyLock/protectionStatus/isConstantCurrent/outputEnabled + 新字段（modelId/firmwareVersion/systemTempF）
+    5. `notifyListeners`
+  - `loadSlot()` / `loadMemorySlot()` 实现完整保留，仅 UI 不再调用，便于回退测试
+
+### 关键架构变化
+
+**旧逻辑（已废弃，代码保留）**：
+```
+loadMemorySlot()
+= 读 M0~M9 保存区（HR[80+idx*4]）
++ 软件写 HR8（Vset）/ HR9（Iset）/ HR82（OVP）/ HR83（OCP）
+```
+4 次单独 Modbus 写入；UI 状态来自软件缓存，不是设备实测值。
+
+**新逻辑（UI 当前使用）**：
+```
+quickSwitch()
+= write HR19=slot
+→ 等待 600ms 设备硬件加载 slot preset
+→ read HR0~HR120（来自 worker isolate 真实 RTU 读）
+→ UI 使用设备真实状态
+```
+1 次 Modbus 写 + 1 次 Modbus 读；UI 状态来自设备实测，消除软件缓存与设备不一致风险。
+
+### 当前测试状态
+
+- `flutter analyze`：**28 issues**，与 Phase L1.2 baseline 一致，**0 新增**
+- `flutter test`：**12/12 PASS**
+  - widget_test × 1
+  - register_page_load_test × 1（RegisterPage 加载冒烟）
+  - phasea_schema_test × 4（新 schema 字段 + quickSwitch + clamp）
+  - phasea5_quickswitch_verify × 1（smoke 默认运行，hardware 测试 skip）
+  - phaseb_quickswitch_test × 6（provider flow：activeSlot/refresh/clamp/keyLock/loadSlot 兼容/新字段）
+- Phase A.5 hardware：**PASS**（HR19 0→1, HR8 4.20→5.00V, HR9 6.100→5.000A）
+
+### 后续可选事项（未启动 Phase C）
+
+- **B.5 旧路径残留 audit**：清理 `loadSlot` / `loadMemorySlot` 的兼容性引用（当前标 `@Deprecated` 但未删；可在确认无任何路径调用后真删除）
+- **Phase C UI 展示**：
+  - `firmwareVersion` 显示（Dashboard / About 页 / RegisterPage V 列）
+  - `keyLock` 状态徽章（Dashboard 顶部）
+  - `protectionStatus` OVP/OCP/OTP 徽章（Dashboard 顶部 + 红色告警）
+  - RegisterPage 用户编辑写入路径完善（新增字段对应已写支持）
+- **quickSwitch 延迟优化**：当前固定 `await 600 ms` 后再 read；可以改为短轮询（200ms × 最多 5 次）检测 HR8 是否变化为 slot preset target，未变化才退化为固定等待。降低 typical case 切换延迟。
+
+### 修改文件清单（本次 Phase A + A.5 + B）
+
+源代码：
+- `lib/models/power_supply_data.dart` — 新字段 firmwareVersion/keyLock/protectionStatus，重命名 internalState→systemTempF，auxVoltage/statusFlags 标 @Deprecated
+- `lib/models/register_definition.dart` — Phase L1.2 寄存器表（HR0..HR19 全部 datasheet 确认）
+- `lib/services/modbus_service.dart` — abstract 接口新增 quickSwitch + loadMemorySlot 标 @Deprecated
+- `lib/services/serial_modbus_service.dart` — quickSwitch 实现（writeRegister(19, slot)），loadMemorySlot 标 @Deprecated，_parseAllRegs 全链路新字段解码
+- `lib/services/mock_modbus_service.dart` — quickSwitch 实现 + readRawRegisters 提升 fidelity + 各 setter 同步新字段
+- `lib/services/modbus_worker.dart` — init read / fastPoll 解码改为新字段，跨 isolate serial/deserialize 同步
+- `lib/providers/power_supply_provider.dart` — 新增 quickSwitch(slot) + loadSlot 标 @Deprecated
+- `lib/widgets/bottom_status.dart` — UI 调用 loadSlot → quickSwitch（2 处）
+- `lib/widgets/setpoint_panel.dart` — UI 调用 loadSlot → quickSwitch（1 处）
+- `lib/widgets/register_page.dart` — 地址格式 HRxxx → 0xXXXX
+
+测试：
+- `test/register_page_load_test.dart` — RegisterPage 加载冒烟
+- `test/phasea_schema_test.dart` — Phase A 字段验证（4 个 test）
+- `test/phasea5_quickswitch_verify.dart` — Phase A.5 验证脚本（smoke + hardware gated）
+- `test/phaseb_quickswitch_test.dart` — Phase B provider flow 验证（6 个 test）
+
+未修改：
+- `lib/models/register_conflicts.dart`（Phase A 显式排除）
+- ModbusScheduler / modbus_task.dart / polling 架构
+- `FAST 150ms` / `SLOW 1000ms` / `_accumulateRead 250ms` 三个数值
+- RegisterPage 布局 / 风格 / 交互逻辑
+- Dashboard / 业务功能 UI 大改（Phase C 范围）
+

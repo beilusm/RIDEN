@@ -29,6 +29,12 @@ class MockModbusService implements ModbusService {
   double _temperature = 30.0;
   double _vIn = 15.72;
   int _slotIndex = 0;
+  // Phase A mock additions for the schema-audit register map.
+  final int _firmwareVersion = 0x0100; // mock firmware 1.0.0
+  int _keyLock = 0; // 0=unlocked by default (writable via HR[15])
+  final int _protectionStatus = 0; // 0=normal (mock never asserts OVP/OCP/OTP)
+  final double _systemTempF = 86.0; // ~30°C in Fahrenheit
+  int _quickSlot = 0; // mirrors the value last written to HR[19]
 
   // Mock slot storage: index → [vSetRaw, iSetRaw, ovpRaw, ocpRaw]
   final Map<int, List<int>> _slots = {
@@ -72,7 +78,27 @@ class MockModbusService implements ModbusService {
 
   @override
   Future<void> writeRegister(int address, int value) async {
-    // no-op for mock (state is held in local fields)
+    // Mock-side routing for the new Phase A writes so UI / provider
+    // code can be validated against the schema even without a device.
+    switch (address) {
+      case 15:
+        _keyLock = value.clamp(0, 1);
+        break;
+      case 19:
+        // HR[19] — quick-switch to M0..M9. Mirror the value so a
+        // subsequent readRawRegisters() can observe the change.
+        _quickSlot = value.clamp(0, 9);
+        break;
+      default:
+        // no-op for mock (other writes target setVoltage etc. via
+        // their typed setters).
+        break;
+    }
+  }
+
+  @override
+  Future<void> quickSwitch(int slotIndex) async {
+    _quickSlot = slotIndex.clamp(0, 9);
   }
 
   @override
@@ -99,6 +125,8 @@ class MockModbusService implements ModbusService {
   }
 
   @override
+  @Deprecated('Use quickSwitch(slotIndex) instead — Phase B verified '
+      'HR[19] as the device-side quick-switch entry point')
   Future<void> loadMemorySlot(int slotIndex) async {
     _slotIndex = slotIndex;
     final raw = _slots[slotIndex];
@@ -134,9 +162,42 @@ class MockModbusService implements ModbusService {
   Future<PowerSupplyData?> readAllRegisters() async {
     return PowerSupplyData(timestamp: DateTime.now());
   }
+
+  /// Return a synthetic 121-register snapshot that mirrors the
+  /// mock's current internal state.  This simulates what a real
+  /// device would report on a full read and lets the Phase A.5
+  /// verification flow exercise the full plumbing against the mock.
   @override
-  Future<List<int>?> readRawRegisters({String? dedup, int? expireMs}) async =>
-      List.filled(121, 0);
+  Future<List<int>?> readRawRegisters({String? dedup, int? expireMs}) async {
+    final regs = List<int>.filled(121, 0);
+    regs[0] = 60067; // modelId
+    regs[3] = _firmwareVersion;
+    regs[5] = _temperature.round();
+    regs[7] = _systemTempF.round();
+    regs[8] = (_vSet * 100).round();
+    regs[9] = (_iSet * 1000).round();
+    regs[10] = (_vOut * 100).round();
+    regs[11] = (_iOut * 1000).round();
+    regs[14] = (_vIn * 100).round();
+    regs[15] = _keyLock;
+    regs[16] = _protectionStatus;
+    regs[17] = _ccMode ? 1 : 0;
+    regs[18] = _outputEnabled ? 1 : 0;
+    regs[19] = _quickSlot;
+    regs[39] = _capacityMah;
+    regs[41] = _energyMwh;
+    regs[72] = 3; // screen brightness (legacy mock default)
+    for (int s = 0; s < 10; s++) {
+      final raw = _slots[s];
+      if (raw != null && raw.length >= 4) {
+        regs[80 + s * 4] = raw[0];
+        regs[80 + s * 4 + 1] = raw[1];
+        regs[80 + s * 4 + 2] = raw[2];
+        regs[80 + s * 4 + 3] = raw[3];
+      }
+    }
+    return regs;
+  }
 
   @override
   void pauseTieredPolling() {}
@@ -177,15 +238,18 @@ class MockModbusService implements ModbusService {
       timestamp: DateTime.now(),
       modelId: 60067,
       inputVoltage: _vIn,
-      auxVoltage: 3.31,
       temperature: _temperature,
       outputVoltage: _vOut,
       outputCurrent: _iOut,
       inputVoltageAlt: _vIn,
+      keyLock: _keyLock,
+      protectionStatus: _protectionStatus,
       isConstantCurrent: _ccMode,
       outputEnabled: _outputEnabled,
       capacityMah: _capacityMah,
       energyMwh: _energyMwh,
+      firmwareVersion: _firmwareVersion,
+      systemTempF: _systemTempF,
       setVoltage: _vSet,
       setCurrent: _iSet,
       memorySlots: [],

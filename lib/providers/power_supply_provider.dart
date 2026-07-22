@@ -290,6 +290,57 @@ class PowerSupplyProvider extends ChangeNotifier {
     );
   }
 
+  /// Phase B: hardware quick-switch to memory slot M0..M9.
+  ///
+  /// Writes HR[19] = [slotIndex] via the device protocol verified in
+  /// Phase A.5.  After writing, waits briefly for the device firmware
+  /// to load the slot's preset into the active registers, then issues
+  /// a full 121-register read so the UI state reflects the device's
+  /// actual post-switch state — not a software cache.
+  ///
+  /// Replaces the legacy [loadSlot] path that did 4 separate writes
+  /// (setVoltage / setCurrent / setOVP / setOCP).  Kept for fallback
+  /// only; UI now calls [quickSwitch].
+  Future<void> quickSwitch(int slotIndex) async {
+    if (slotIndex < 0 || slotIndex > 9) return;
+    _activeSlot = slotIndex;
+    notifyListeners();
+
+    try {
+      await _service.quickSwitch(slotIndex);
+      // Allow ~600ms for the device firmware to apply the slot preset.
+      // 600ms is comfortably above the FAST poll interval (150ms × ~4
+      // cycles) so the next read reflects a settled state.
+      await Future.delayed(const Duration(milliseconds: 600));
+      // Refresh UI state from the device (full read at user priority).
+      final raw = await _service.readRawRegisters(
+          dedup: 'quick_switch', expireMs: 1500);
+      if (raw != null && raw.length >= 20) {
+        _data = _data.copyWith(
+          // Init-read fields: read once and retained.  quickSwitch
+          // refresh can update them too since the full read covers
+          // HR0..HR120.
+          modelId: raw[0],
+          firmwareVersion: raw[3],
+          systemTempF: raw[7].toSigned(16).toDouble(),
+          // Fast-poll fields.
+          setVoltage: raw[8] / 100.0,
+          setCurrent: raw[9] / 1000.0,
+          keyLock: raw[15],
+          protectionStatus: raw[16],
+          isConstantCurrent: raw[17] == 1,
+          outputEnabled: raw[18] == 1,
+        );
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('[PROVIDER] quickSwitch M$slotIndex FAILED: $e');
+    }
+  }
+
+  @Deprecated('Use quickSwitch(slotIndex) instead — Phase B replaced '
+      'this 4-write path with a single HR[19] quick-switch.  Kept '
+      'for fallback / A/B comparison; no UI caller remains.')
   Future<void> loadSlot(int index) async {
     _activeSlot = index;
     final cached = _slots[index];

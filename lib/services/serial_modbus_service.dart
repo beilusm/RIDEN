@@ -34,17 +34,29 @@ class SerialModbusService implements ModbusService {
     // Merge incoming snapshot into _current cache, then emit.
     // FAST poll has setVoltage > 0 → trust all measurement fields.
     // SLOW poll has setVoltage == 0 → merge only slots.
+    // INIT read (HR[0..7]) has setVoltage == 0 too; it carries the
+    // init-only fields modelId / firmwareVersion / systemTempF that
+    // the FAST/SLOW loops never read.  Accept those when the snapshot
+    // is not from the FAST loop (so the fast poll defaults of 0 / 60067
+    // won't overwrite the values stamped by the init read).
     _sub = _worker!.dataStream.listen((snapshot) {
       final isFast = snapshot.setVoltage > 0;
       _current = _current.copyWith(
         timestamp: snapshot.timestamp,
+        // Init-read only fields: merge when the snapshot is not from
+        // the FAST path (init read has setVoltage == 0).
+        modelId: !isFast ? snapshot.modelId : _current.modelId,
+        firmwareVersion: !isFast ? snapshot.firmwareVersion : _current.firmwareVersion,
+        systemTempF: !isFast ? snapshot.systemTempF : _current.systemTempF,
+        // Fast-poll fields.
         temperature: isFast ? snapshot.temperature : _current.temperature,
         setVoltage: isFast ? snapshot.setVoltage : _current.setVoltage,
         setCurrent: isFast ? snapshot.setCurrent : _current.setCurrent,
         outputVoltage: isFast ? snapshot.outputVoltage : _current.outputVoltage,
         outputCurrent: isFast ? snapshot.outputCurrent : _current.outputCurrent,
         inputVoltage: isFast ? snapshot.inputVoltage : _current.inputVoltage,
-        statusFlags: isFast ? snapshot.statusFlags : _current.statusFlags,
+        keyLock: isFast ? snapshot.keyLock : _current.keyLock,
+        protectionStatus: isFast ? snapshot.protectionStatus : _current.protectionStatus,
         isConstantCurrent: isFast ? snapshot.isConstantCurrent : _current.isConstantCurrent,
         outputEnabled: isFast ? snapshot.outputEnabled : _current.outputEnabled,
         capacityMah: isFast ? snapshot.capacityMah : _current.capacityMah,
@@ -188,6 +200,14 @@ class SerialModbusService implements ModbusService {
       writeRegister(9, (a * 1000).round());
   @override
   Future<void> setOutput(bool e) => writeRegister(18, e ? 1 : 0);
+
+  /// Phase A: hardware quick-switch to slot M0..M9 via HR[19].
+  /// No interaction with the legacy [loadMemorySlot] path — kept
+  /// separate so both can be A/B-validated against the device.
+  @override
+  Future<void> quickSwitch(int slotIndex) =>
+      writeRegister(19, slotIndex.clamp(0, 9));
+
   @override
   Future<void> setOVP(double v) =>
       writeRegister(82, (v * 100).round());
@@ -196,6 +216,8 @@ class SerialModbusService implements ModbusService {
       writeRegister(83, (a * 1000).round());
 
   @override
+  @Deprecated('Use quickSwitch(slotIndex) instead — Phase B verified '
+      'HR[19] as the device-side quick-switch entry point')
   Future<void> loadMemorySlot(int index) async {
     final vals = await readMemorySlot(index);
     if (vals == null || vals.length < 4) return;
@@ -238,15 +260,22 @@ class SerialModbusService implements ModbusService {
         timestamp: DateTime.now(),
         modelId: r(0),
         inputVoltage: r(14) / 100.0,
-        auxVoltage: r(3) / 10.0,
+        // HR[3] = firmware version (uint16 RO, no scaling).
+        firmwareVersion: r(3),
         temperature: r(5).toDouble(),
-        internalState: r(7),
+        // HR[7] = system temperature °F (int16 signed).  Reinterpret
+        // the unsigned 16-bit wire value as two's complement so
+        // negative temperatures are handled correctly.
+        systemTempF: r(7).toSigned(16).toDouble(),
         setVoltage: r(8) / 100.0,
         setCurrent: r(9) / 1000.0,
         outputVoltage: r(10) / 100.0,
         outputCurrent: r(11) / 1000.0,
         inputVoltageAlt: r(14) / 10.0,
-        statusFlags: r(15),
+        // HR[15] = Key Lock enum {0=未锁定, 1=键盘锁定}.
+        keyLock: r(15),
+        // HR[16] = Protection Status enum {0=正常, 1=OVP, 2=OCP, 3=OTP}.
+        protectionStatus: r(16),
         isConstantCurrent: r(17) == 1,
         outputEnabled: r(18) == 1,
         capacityMah: r(39),
