@@ -787,3 +787,77 @@ sed -i -E 's|<release version="[^"]*" date="[^"]*">|<release version="1.0.0-l12-
 - **S4 Runner.rc VERSION_AS_STRING 不 CI 校验** — 二进制 `.rc` 资源不易 sed 改；Flutter 工具链已从 pubspec 自动注入 `FileVersion` / `ProductVersion` 数值字段；`VERSION_AS_STRING` 仅是 VS_VERSION_INFO 资源块的一个字符串条目。v1.1+ 评估 sync 方案。当前接受不校验。
 - **dev CI (`windows-build.yml` / `linux-build.yml`) APP_VERSION hardcoded '1.0.0'** — Phase L1.2 不动 dev CI，版本校验只在 tag 触发的 release workflow 生效。Phase L1.3 评估 dev CI 是否也需要校验。
 
+## v1.0.1 Release 交付记录 (FROZEN)
+
+**Phase L1.2 体系首次生产验证通过** — v1.0.1 是首个通过双 workflow 同步发布 + CI 自动校验三来源 + Linux CI 自动注入 metainfo 的版本。
+
+| 字段 | 值 |
+|---|---|
+| 发布时间 | 2026-07-22T05:42:21Z |
+| Tag | `v1.0.1` (annotated, message "Release v1.0.1") |
+| Commit | `075dd5d Bump version to 1.0.1` |
+| Release name | `RIDEN Power Supply 1.0.1` |
+| isPrerelease | `false` (Latest) |
+| Linux workflow run | `29894439550` — SUCCESS 2m21s (17 steps) |
+| Windows workflow run | `29894439508` — SUCCESS 3m27s (12 steps) |
+
+### Release assets（4 个完整）
+
+| 文件名 | 大小 | 平台 workflow |
+|---|---|---|
+| `RIDEN_PowerSupply-1.0.1-linux-x86_64.AppImage` | 10,299,896 B (9.82 MB) | release-linux.yml |
+| `SHA256SUMS-linux.txt` | 112 B | release-linux.yml |
+| `RIDEN_PowerSupply-1.0.1-windows-x64.zip` | 12,743,023 B (12.15 MB) | release-windows.yml |
+| `SHA256SUMS-windows.txt` | 1,753 B | release-windows.yml |
+
+### CI 校验产物（Phase L1.2 三新 step 实跑日志确认）
+
+- Linux Step 4 `Verify env.sh APP_VERSION`: `env.sh APP_VERSION: 1.0.1` → `OK: tag semver matches env.sh APP_VERSION (1.0.1)`
+- Linux Step 13 `Inject metainfo.xml`: `before: <release version="1.0.0" date="2026-07-19">` → `after: <release version="1.0.1" date="2026-07-22">`
+- Windows Step 4 `Verify env_windows.sh APP_VERSION`: `env_windows APP_VERSION: 1.0.1` → `OK: tag semver matches env_windows.sh APP_VERSION (1.0.1)`
+
+### 下游验证（本地下载 AppImage 实测）
+
+- `sha256sum -c SHA256SUMS-linux.txt` → 成功
+- AppImage type2 magic offset 8: `41 49 02` (`AI\x02`) ✓
+- `file`: ELF 64-bit LSB PIE executable, x86-64 ✓
+- `--appimage-extract` → `squashfs-root/usr/share/metainfo/io.github.beilusm.ridenps.metainfo.xml:79`: `<release version="1.0.1" date="2026-07-22">` ✓
+
+### 当前版本传播策略（v1.0.1 已实施）
+
+1. 改 `pubspec.yaml` `version: 1.0.1+1` (S1) — 主来源
+2. 改 `packaging/config/env.sh` `APP_VERSION="1.0.1"` (S2)
+3. 改 `packaging/config/env_windows.sh` `APP_VERSION="1.0.1"` (S3)
+4. 不改 `linux/metainfo/...metainfo.xml` `<release>` (S5) — CI 注入
+5. 不改 `windows/runner/Runner.rc` `VERSION_AS_STRING "1.0.0"` (S4) — 接受不校验
+6. 打 tag `v1.0.1` → 双 workflow 同步 → CI 校验 S1+S2 (Linux) / S1+S3 (Windows) → Linux 注入 S5 → 4 assets 上传到同一 Release
+
+### 已知未处理项（冻结前最终盘点）
+
+| 项 | 来源 | 状态 | 处理建议 |
+|---|---|---|---|
+| Runner.rc `VERSION_AS_STRING "1.0.0"` | S4 | OPEN — 接受不校验 | v1.1+ 评估自动 sync 脚本；当前 Flutter 工具链已注入 FileVersion/ProductVersion 数值字段 |
+| `windows-build.yml:28` dev CI `APP_VERSION: '1.0.0'` | dev CI | OPEN — 不动 dev CI | Phase L1.3 评估（仅影响 push 触发的 30 天过期 artifact，不进 Release） |
+| README 4 处 `1.0.0` 文档示例 | doc | OPEN — 非 release 阻塞 | 后续 doc 版本示例 cleanup |
+| `packaging/scripts/build_release.sh` 3 处注释引用 `1.0.0` | 注释 | OPEN — 不动本地脚本 | Phase L1.2 明确排除；将来可改注释为 `${APP_VERSION}` |
+| P1-1 `_onPollMiss` 死代码 | `power_supply_provider.dart:184` | OPEN | 业务代码修复（与 release 无关） |
+| P1-2 zombie `_worker` 阻塞 reconnect | `serial_modbus_service.dart:30-32` | OPEN | 业务代码修复（与 release 无关） |
+| AppStream `url-not-reachable` warning | metainfo validate | OPEN — `--no-net` 模式 | repo 已上线 + URL 已更新；有 net 环境重跑 `appstreamcli validate` 验证可消除 |
+
+### 发布冻结声明
+
+**v1.0.1 Release 已冻结**：不重新 build、不重新发布、不重新打 tag。Release 内容、assets、tag 不可变。如需修正任何问题，按 SemVer 走 v1.0.2 或 v1.1.0 流程。
+
+仓库最终状态：
+
+```
+Commits (top 3):
+  075dd5d Bump version to 1.0.1                    ← 当前 HEAD
+  e7c4f35 Add version-source CI checks + metainfo injection (Phase L1.2)
+  8470118 Add Linux GitHub Release automation
+
+Tags:       v1.0.0, v1.0.1
+Releases:   v1.0.1 (Latest, 4 assets) / v1.0.0 (Windows-only, 历史)
+工作树:     clean
+```
+
