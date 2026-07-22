@@ -1,7 +1,7 @@
 name: riden_power_supply
 description: RIDEN Digital Programmable Power Supply - PC Upper Monitor
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+1
 
 environment:
   sdk: ^3.12.0

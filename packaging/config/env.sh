@@ -10,7 +10,7 @@ export APP_ID="io.github.beilusm.ridenps"
 # "Failed to download runtime file" 错误。
 export APP_NAME="RIDEN_PowerSupply"
 export APP_DISPLAY_NAME="RIDEN Power Supply"
-export APP_VERSION="1.0.0"
+export APP_VERSION="1.0.1"
 # 注意：Flutter build 目录用 x64，AppImage 工具链用 x86_64，两个值不同。
 export APP_ARCH="x86_64"           # AppImage / appimagetool 命名用
 export FLUTTER_ARCH="x64"          # Flutter build/linux/$ARCH/release 用
