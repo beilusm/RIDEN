@@ -78,6 +78,38 @@ jobs:
           }
           Write-Host "OK: tag semver matches pubspec.yaml semver ($tag_semver)"
 
+      - name: Verify env_windows.sh APP_VERSION matches tag semver
+        shell: pwsh
+        run: |
+          # Phase L1.2: env_windows.sh APP_VERSION 硬编码是版本来源之一。
+          # CI 自动校验 — tag push 时若忘记同步 env_windows.sh，本 step fail，
+          # 避免 Windows ZIP 文件名 / SHA256SUMS 与 tag / pubspec / Runner.rc 错配。
+          # env_windows.sh APP_VERSION 无 prerelease 后缀（与 pubspec + 前部分同步为纯 semver），
+          # 故比较 tag_semver（已 strip -prerelease 后缀）== env APP_VERSION。
+          $path = "packaging/config/env_windows.sh"
+          if (-not (Test-Path $path)) {
+            Write-Host "::error::$path not found"
+            exit 1
+          }
+          $line = Get-Content $path | Where-Object { $_ -match '^export APP_VERSION="([^"]+)"' } | Select-Object -First 1
+          if (-not $line) {
+            Write-Host '::error::env_windows.sh 未找到 export APP_VERSION= 字段'
+            exit 1
+          }
+          # 第二次 match 抽 capture group — pwsh $Matches 在 Where-Object 内不保留
+          $line -match '^export APP_VERSION="([^"]+)"' | Out-Null
+          $env_version = $Matches[1]
+          $tag_semver = ($env:APP_VERSION -split '-', 2)[0]
+          Write-Host "tag version:            $env:APP_VERSION"
+          Write-Host "tag semver:             $tag_semver (strip prerelease suffix)"
+          Write-Host "env_windows APP_VERSION: $env_version"
+          if ($tag_semver -ne $env_version) {
+            Write-Host "::error::Tag semver $tag_semver != env_windows.sh APP_VERSION $env_version"
+            Write-Host "请同步 packaging/config/env_windows.sh APP_VERSION 为 $tag_semver"
+            exit 1
+          }
+          Write-Host "OK: tag semver matches env_windows.sh APP_VERSION ($tag_semver)"
+
       - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
         uses: subosito/flutter-action@v2
         with:

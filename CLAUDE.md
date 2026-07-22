@@ -107,9 +107,47 @@ static const _verboseLog = false; // set true for per-task debug logs
 - **`make_windows_zip.sh` 唯一依赖 Python 3** — 不依赖 7-Zip / Inno Setup / NSIS；Python 3 是 Flutter Windows 工具链必装项
 - **`windows/runner/Runner.rc` 仅允许修改 4 个字符串字段** — `CompanyName` / `FileDescription` / `LegalCopyright` / `ProductName`；其他字段（`FileVersion` / `ProductVersion` / `OriginalFilename`）由 Flutter 工具链自动注入
 
+## 版本来源管理 (Phase L1.2 已实施)
+
+**pubspec.yaml 是版本主来源**（`version: 1.0.0+1`）。每次发版改一处 pubspec + 两处 env*.sh，CI 自动校验一致性，metainfo.xml 由 CI 注入。
+
+### 5 处硬编码版本来源
+
+| # | 文件 | CI 校验 | CI 注入 | 同步责任 |
+|---|------|---------|---------|---------|
+| S1 | `pubspec.yaml` `version:` | ✓ 两 workflow 都校验 (strip `+build`) | — | 开发者 |
+| S2 | `packaging/config/env.sh` `APP_VERSION="1.0.0"` | ✓ `release-linux.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
+| S3 | `packaging/config/env_windows.sh` `APP_VERSION="1.0.0"` | ✓ `release-windows.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
+| S4 | `windows/runner/Runner.rc` `VERSION_AS_STRING "1.0.0"` | ✗ | ✗ | Flutter 工具链已从 pubspec 注入 FileVersion/ProductVersion 数值字段 |
+| S5 | `linux/metainfo/io.github.beilusm.ridenps.metainfo.xml` `<release version="1.0.0" date="2026-07-19">` | ✗ | ✓ `release-linux.yml` `sed` 注入 tag 版本 + 当天日期到 runner workspace | CI |
+
+### 发版流程（v1.0.1+）
+
+1. 改 `pubspec.yaml` `version:` (S1) — 主来源
+2. 改 `packaging/config/env.sh` `APP_VERSION="..."` (S2)
+3. 改 `packaging/config/env_windows.sh` `APP_VERSION="..."` (S3)
+4. **不改** `linux/metainfo/...metainfo.xml` `<release>` — Linux release workflow CI 自动注入 tag 版本 + 当前日期到 runner workspace 工作副本
+5. **不改** `windows/runner/Runner.rc` `VERSION_AS_STRING` — 该字符串字段仅影响 VS_VERSION_INFO 资源块中的一个条目；Flutter 工具链已从 `pubspec.yaml` 自动注入 `FileVersion` / `ProductVersion` 数值字段。Phase L1.2-A 接受不校验 S4
+6. 打 tag `v1.0.1` → 两 workflow 同步触发 → CI 校验 S1+S2 (Linux) / S1+S3 (Windows) → Linux 注入 S5 → 双平台 assets 上传到同一 Release
+
+### CI 校验语义
+
+- `tag_semver = tag_version` 去掉 `-prerelease` 后缀（用 `%%-*` longest match，例如 `1.0.0-l12-test` → `1.0.0`）
+- `pubspec_semver = pubspec_version` 去掉 `+build` 后缀
+- `env APP_VERSION` 无 prerelease 后缀（与 pubspec `+` 前部分同步为纯 semver）
+- 三者必须严格字符串相等，否则 CI fail 通知同步
+
+### 版本来源不做的事
+
+- **不创建 `sync_versions.sh` 自动同步脚本** — 五来源手工同步足够，避免脚本运行时机 / 共谋 / 修改 repo 内容等复杂度
+- **不自动修改 `Runner.rc`** — 二进制资源文件 sed 改易破坏 MSVC .rc 编译；Flutter 工具链已注入主要版本字段
+- **不改 `env.sh` / `env_windows.sh` / `metainfo.xml` 仓库文件本身** — CI 只校验 (S2/S3) 或只改 workspace 副本 (S5)，不 commit 不 push
+- **不扩展 dev CI**（`windows-build.yml` / `linux-build.yml`）— 版本校验只在 tag 触发的 release workflow 生效，dev CI 不变
+- **不改本地打包脚本**（`packaging/scripts/*.sh` / `make_appimage.sh`）— metainfo 注入由 CI workflow 内联 step 完成，不注入到本地构建链路
+
 ### 通用
 - 不主动提交 git，除非用户明确要求
-- 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 章节）
+- 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 / Phase L1.2 章节）
 - 任何代码修改完成后必须运行 `fvm flutter analyze` 验证 0 新 issue
 
 ## 当前 Patch 状态
@@ -120,7 +158,9 @@ static const _verboseLog = false; // set true for per-task debug logs
 - **Phase 2** — Linux Desktop Integration：APPLIED（App ID / 图标 / .desktop / metainfo / udev 全部完成）
 - **Phase 3** — Release Engineering：APPLIED（4 个 packaging 脚本，9.9MB AppImage，HiDPI 验证通过）
 - **Phase W1** — Windows Resource + ZIP Pipeline：APPLIED（Runner.rc 4 字段 + main.cpp 标题 + 20KB .ico + env_windows.sh + make_windows_zip.sh + build_windows_release.sh）
-- **Phase W2** — Windows Release 实测：待用户在 Windows 主机执行 `flutter build windows --release` + `make_windows_zip.sh` 验证
+- **Phase W2** — Windows Release 实测：v1.0.0 已通过 `release-windows.yml` CI 发布 (Windows-only Latest)；本地 `make_windows_zip.sh` 路径仍待用户在 Windows 主机实测
+- **Phase L1.1** — Linux GitHub Release automation：APPLIED（`release-linux.yml` 17 steps，`gh release` fallback，AppImage + SHA256SUMS-linux.txt）
+- **Phase L1.2** — 版本来源 CI 校验 + metainfo 注入：APPLIED（双 workflow +env*.sh 校验 / Linux +metainfo sed 注入；见"版本来源管理"章节）
 - **P0 修复 + P1-3 修复 + Option B refactor**：APPLIED
 - **P1-1 (`_onPollMiss` 死代码)**：仍 OPEN
 - **P1-2 (zombie `_worker` 阻塞自动 reconnect)**：仍 OPEN

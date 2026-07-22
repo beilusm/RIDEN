@@ -712,3 +712,78 @@ api-ms-win-core-synch-l1-2-0.dll
 
 **静态链接 /MT 选项** — 改 `windows/runner/CMakeLists.txt` + 所有插件 CMakeLists 设 `CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded` 可消除 VC++ Redist 依赖，但需修改第三方插件 CMakeLists（重写 `apply_standard_settings` 或在每个插件 target 上 `set_property`），属于发布工程深层调整，v1.0 不做。当前方案 = 让用户一次性装 14MB 的 `vc_redist.x64.exe` — 已是 Windows 桌面应用主流做法（Visual Studio Code、Python、Node.js 等均同样要求）。
 
+# Phase L1.2 — 版本来源 CI 校验 + metainfo 注入 (APPLIED)
+
+## 背景
+
+Phase L1.1 Linux release workflow 上线后发现：项目有 5 处硬编码版本来源，tag push 时若忘记同步其中任一处，Release 产物版本号会错配。Phase L1.2 只做版本来源一致性校验，不引入复杂自动同步系统。
+
+## 5 处硬编码版本来源
+
+| # | 文件 | CI 校验 | CI 注入 | 同步责任 |
+|---|------|---------|---------|---------|
+| S1 | `pubspec.yaml` `version:` | ✓ 两 workflow 都校验 (strip `+build`) | — | 开发者 |
+| S2 | `packaging/config/env.sh` `APP_VERSION="1.0.0"` | ✓ `release-linux.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
+| S3 | `packaging/config/env_windows.sh` `APP_VERSION="1.0.0"` | ✓ `release-windows.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
+| S4 | `windows/runner/Runner.rc` `VERSION_AS_STRING "1.0.0"` | ✗ | ✗ | Flutter 工具链已从 pubspec 注入 FileVersion/ProductVersion 数值字段 |
+| S5 | `linux/metainfo/io.github.beilusm.ridenps.metainfo.xml` `<release version="1.0.0" date="2026-07-19">` | ✗ | ✓ `release-linux.yml` `sed` 注入 tag 版本 + 当天日期到 runner workspace | CI |
+
+**pubspec.yaml 是版本主来源**。发版流程：改 S1 + S2 + S3 三处 → 打 tag → CI 校验三处一致 + Linux 注入 S5 → 双平台 assets 上传同一 Release。
+
+## 文件修改
+
+### `.github/workflows/release-linux.yml` (+2 steps → 17 steps total)
+
+1. **Step 4: Verify env.sh APP_VERSION matches tag semver** — `grep '^export APP_VERSION='` 抽值，与 `tag_semver`（`%%-*` longest match strip prerelease）严格相等校验。不一致 fail 并提示同步命令。
+2. **Step 13 (Fetch AppImage type2-runtime 之后、Build AppImage 之前): Inject tag version + today's date into metainfo.xml** — `sed -i -E 's|<release version="[^"]*" date="[^"]*">|...|'` 注入 `${APP_VERSION}` + `$(date +%Y-%m-%d)` 到 runner workspace 工作副本。注入后 `grep -q "version=\"${APP_VERSION}\""` 校验成功。**不 commit 不改 repo 文件** — 只改 workspace 副本，`make_appimage.sh` Stage 3 `cp` 该副本到 AppDir/usr/share/metainfo/。
+
+### `.github/workflows/release-windows.yml` (+1 step → 12 steps total)
+
+1. **Step 4: Verify env_windows.sh APP_VERSION matches tag semver** — `Get-Content | Where-Object { $_ -match '^export APP_VERSION="([^"]+)"' }` 抽值，与 `tag_semver`（`-split '-'` 取首段）严格相等校验。
+
+## 发版流程（v1.0.1+）
+
+1. 改 `pubspec.yaml` `version:` (S1)
+2. 改 `packaging/config/env.sh` `APP_VERSION="..."` (S2)
+3. 改 `packaging/config/env_windows.sh` `APP_VERSION="..."` (S3)
+4. **不改** `linux/metainfo/...metainfo.xml` `<release>` — CI 自动注入 S5
+5. **不改** `windows/runner/Runner.rc` `VERSION_AS_STRING` — 接受 S4 不校验（Flutter 工具链已注入数值字段）
+6. 打 tag `v1.0.1` → 两 workflow 同步触发 → CI 校验 S1+S2 (Linux) / S1+S3 (Windows) → Linux 注入 S5 → 双平台 assets 上传同一 Release
+
+## CI 校验语义
+
+- `tag_semver = tag_version` 去掉 `-prerelease` 后缀（`%%-*` longest match，例如 `1.0.0-l12-test` → `1.0.0`）
+- `pubspec_semver = pubspec_version` 去掉 `+build` 后缀
+- `env APP_VERSION` 无 prerelease 后缀（与 pubspec `+` 前部分同步为纯 semver）
+- 三者必须严格字符串相等，否则 CI fail 通知同步
+
+## 不做（明确排除）
+
+- **不创建 `sync_versions.sh` 自动同步脚本** — 五来源手工同步足够，避免脚本运行时机 / 共谋 / 修改 repo 内容等复杂度
+- **不自动修改 `Runner.rc`** — 二进制资源文件 sed 改易破坏 MSVC .rc 编译；Flutter 工具链已注入主要版本字段
+- **不改 `env.sh` / `env_windows.sh` / `metainfo.xml` 仓库文件本身** — CI 只校验 (S2/S3) 或只改 workspace 副本 (S5)，不 commit 不 push
+- **不扩展 dev CI**（`windows-build.yml` / `linux-build.yml`）— 版本校验只在 tag 触发的 release workflow 生效，dev CI 不变
+- **不改本地打包脚本**（`packaging/scripts/*.sh` / `make_appimage.sh`）— metainfo 注入由 CI workflow 内联 step 完成，不注入本地构建链路
+- **不在 metainfo.xml 上做 CI 一致性校验** — S5 由 CI 注入，不需校验（避免循环：注入的不是仓库值）
+
+## 本地验证（注入 sed pattern）
+
+```
+APP_VERSION="1.0.0-l12-test"
+sed -i -E 's|<release version="[^"]*" date="[^"]*">|<release version="1.0.0-l12-test" date="2026-07-22">|' metainfo.xml
+# 结果: <release version="1.0.0-l12-test" date="2026-07-22">  ✓
+```
+
+## 验证计划
+
+- 打 tag `v1.0.0-l12-test`（tag_semver == 1.0.0，与 pubspec/env*.sh 一致，校验 PASS）
+- 双 workflow 成功
+- 下载 AppImage → `unsquashfs` → 检查 `usr/share/metainfo/*.xml` `<release version="1.0.0-l12-test" date="2026-07-22">`
+- 删除测试 Release + tag
+- squash commit → finalize
+
+## Known Issues (Phase L1.2)
+
+- **S4 Runner.rc VERSION_AS_STRING 不 CI 校验** — 二进制 `.rc` 资源不易 sed 改；Flutter 工具链已从 pubspec 自动注入 `FileVersion` / `ProductVersion` 数值字段；`VERSION_AS_STRING` 仅是 VS_VERSION_INFO 资源块的一个字符串条目。v1.1+ 评估 sync 方案。当前接受不校验。
+- **dev CI (`windows-build.yml` / `linux-build.yml`) APP_VERSION hardcoded '1.0.0'** — Phase L1.2 不动 dev CI，版本校验只在 tag 触发的 release workflow 生效。Phase L1.3 评估 dev CI 是否也需要校验。
+

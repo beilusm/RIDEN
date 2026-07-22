@@ -80,6 +80,38 @@ jobs:
           fi
           echo "OK: tag semver matches pubspec.yaml semver ($tag_semver)"
 
+      - name: Verify env.sh APP_VERSION matches tag semver
+        run: |
+          # Phase L1.2: env.sh APP_VERSION 硬编码是版本来源之一。
+          # CI 自动校验 — tag push 时若忘记同步 env.sh，本 step fail，避免
+          # AppImage 文件名 / 内嵌 metainfo 与 pubspec / tag / Runner.rc 错配。
+          # env.sh APP_VERSION 无 prerelease 后缀（与 pubspec 的 + 前部分同步为纯 semver），
+          # 故比较 tag_semver（已 strip -prerelease 后缀）== env APP_VERSION。
+          if [[ ! -f packaging/config/env.sh ]]; then
+            echo "::error::packaging/config/env.sh not found"
+            exit 1
+          fi
+          env_line=$(grep -E '^export APP_VERSION=' packaging/config/env.sh | head -1)
+          if [[ -z "$env_line" ]]; then
+            echo "::error::env.sh 未找到 'export APP_VERSION=' 字段"
+            exit 1
+          fi
+          env_version=$(echo "$env_line" | sed -E 's/^export APP_VERSION="([^"]*)".*/\1/')
+          if [[ -z "$env_version" ]]; then
+            echo "::error::env.sh APP_VERSION 值为空"
+            exit 1
+          fi
+          tag_semver="${APP_VERSION%%-*}"
+          echo "tag version:           $APP_VERSION"
+          echo "tag semver:            $tag_semver (strip prerelease suffix)"
+          echo "env.sh APP_VERSION:    $env_version"
+          if [[ "$tag_semver" != "$env_version" ]]; then
+            echo "::error::Tag semver $tag_semver != env.sh APP_VERSION $env_version"
+            echo "请同步 packaging/config/env.sh APP_VERSION=\"${tag_semver}\""
+            exit 1
+          fi
+          echo "OK: tag semver matches env.sh APP_VERSION ($tag_semver)"
+
       - name: Install Linux build dependencies
         run: |
           # flutter build linux --release 需要 GTK3/glib 开发头 + libserialport-dev
@@ -148,12 +180,44 @@ jobs:
           # preflight 检查 appimagetool 在 PATH
           bash packaging/scripts/fetch_tools.sh
 
+      - name: Inject tag version + today's date into metainfo.xml
+        run: |
+          # Phase L1.2: metainfo.xml `<release version="1.0.0" date="2026-07-19">` 硬编码，
+          # 每次发版手工改易遗漏。CI 在 AppImage 打包前 sed 注入 tag 版本 + 当前日期，
+          # 仅修改 runner workspace 中的工作副本 — 不 commit 不改 repo 文件。
+          # 下个 tag (v1.0.1+) 起无需手工改 metainfo.xml — CI 自动同步。
+          # make_appimage.sh Stage 3 通过 cp 把本文件复制到 AppDir/usr/share/metainfo/，
+          # 故注入必须发生在 Build AppImage 之前。
+          set -e
+          metainfo="linux/metainfo/io.github.beilusm.ridenps.metainfo.xml"
+          if [[ ! -f "$metainfo" ]]; then
+            echo "::error::$metainfo not found"
+            exit 1
+          fi
+          today=$(date +%Y-%m-%d)
+          echo "=== before sed ==="
+          grep -n '<release version=' "$metainfo"
+          # 用 | 作 sed 分隔符 — semver + prerelease marker 不含 | 字符
+          # (SemVer spec 允许 [0-9A-Za-z-.]，label 段同理)，安全。
+          sed -i -E \
+            's|<release version="[^"]*" date="[^"]*">|<release version="'"${APP_VERSION}"'" date="'"${today}"'">|' \
+            "$metainfo"
+          echo "=== after sed ==="
+          grep -n '<release version=' "$metainfo"
+          # 校验注入成功 — 若 metainfo 结构改动导致 sed 不匹配，此处 fail
+          if ! grep -q "version=\"${APP_VERSION}\"" "$metainfo"; then
+            echo "::error::metainfo.xml 注入失败 — 未找到 version=\"${APP_VERSION}\""
+            echo "可能 metainfo.xml <release> 结构已改动 — 检查 sed pattern"
+            exit 1
+          fi
+          echo "OK: metainfo.xml injected version=${APP_VERSION} date=${today}"
+
       - name: Build AppImage
         run: |
           # make_appimage.sh 5 stages: 准备 AppDir → cp Flutter bundle → cp .desktop/icons/metainfo
           # → 写 AppRun + symlink → appimagetool --runtime-file 打包
           # 受 env.sh hardcoded APP_VERSION="1.0.0" 影响，输出文件名为
-          # RIDEN_PowerSupply-1.0.0-x86_64.AppImage（与 tag 版本可能不一致 → Phase L1.2）
+          # RIDEN_PowerSupply-1.0.0-x86_64.AppImage（Phase L1.2 metainfo 注入已在上一步完成）
           # 下一步 mv 为 tag 版本号 + 加 -linux- 后缀
           bash packaging/scripts/make_appimage.sh
 
