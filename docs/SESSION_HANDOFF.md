@@ -216,6 +216,50 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
 | `flutter analyze` | 28 issues，0 新增 |
 | `flutter test` | 12/12 PASS |
 
+## Phase B.1 — quickSwitch 稳定性优化（**未 commit, 待真机回归**）
+
+代码完成（4 lib + 2 test 文件 untracked / unstaged）：
+
+- **Task 1** — `PowerSupplyProvider.quickSwitch` 中 OVP/OCP 源从 `raw[82]/raw[83]`（M0 存储）改为 `raw[80+slot*4+2/3]`（当前 active slot 存储）。`copyWith` 路径已经过用户澄清：每个 Mx 有自己的 OVP/OCP，存储在 `HR[80+slot*4+2/3]`, HR82/HR83 仅指 M0 自己的存储。
+- **Task 2** — `[QSW] before/after` 调试日志打印 HR19/HR8/HR9 + 当前 slot 的 OVP/OCP；新增 `_reg(regs, addr)` 边界安全 helper。
+- **Task 3** — `readAllMemorySlots()` 加入抽象接口 + Serial + Mock：
+  - Serial: 一次 `readRegisters(80, 40)` = 1 RTU 往返代替原 10 次 `readMemorySlot(i)` 累计 ~2.5s
+  - `refreshAllSlots()` 改为单次 bulk read 并打印 `[PROVIDER] refreshAllSlots bulk-read N/10 slots in Xms`
+  - `_startBgSlotRefresh()` 改为直接调 `refreshAllSlots()`；删除孤立字段 `_bgSlotIndex`
+  - Mock `readRawRegisters` 不再单独填充 regs[82/83]（slot loop 已包含 M0 storage 覆盖）
+
+验证状态（通过）：
+
+- `fvm flutter test test/phaseb1_stability_test.dart` — 5/5 PASS（含 `quickSwitch refreshes ovp/ocp` 断言 `ovp=13.0` `ocp=4.0` 来自 M1 存储 HR86/87）
+- `fvm flutter test test/phaseb1_hw_regression.dart`（smoke 部分）— PASS（plumbing OK, HR19 ack ×4, M0 STABLE）
+- `fvm flutter analyze` — 28 issues / **0 新增**
+
+**待办**: 真机回归（`PHASEB1_HW=1 fvm flutter test test/phaseb1_hw_regression.dart --name hardware -r expanded`）验证新 per-slot OVP/OCP 地址在真机读出 M1=13V/4A, M2=20V/0.5A，再 commit。
+
+### 已知设备行为 — Phase B.1 真机首次发现（用户决策：暂不处理，仅记录）
+
+**HR19=0 不会 reload M0 preset**：
+
+- Phase A.5 已验证 forward load：`HR19=0→1` 触发设备加载 M1 已存 Vset/Iset 到 HR8/HR9（HR8 4.20V→5.00V, HR9 6.100A→5.000A）
+- Phase B.1 真机双向回归首次发现 reverse 路径：`HR19=1→0` 不触发设备 reload M0 preset 到 HR8/HR9。HR8/HR9 保持切换前（M1 那一刻）的当前值，并不回到 M0 已存的 Vset/Iset。
+- 这不是代码 bug，是设备固件设计：HR19 作为 "active slot 选择器" 时，写 0 后通常被设备理解为 "停留 / 无新选择"，不强制复置活跃寄存器。
+- HR82/HR83 同样不随 quickSwitch 变化 — 永远 = M0 自己的存储值（与 datasheet 地址重叠设计一致）。
+
+**UI 当前语义**：
+
+- 用户从 M0 进入 M1..M9 再回到 M0 时，工作寄存器（HR8/HR9）仍显示上一个 slot 的 Vset/Iset。这是设备固件行为，UI 并不主动改写。
+- OVP/OCP 由 provider 从 active slot 存储地址读出（Phase B.1 Task 1 修正后），M0 active 时 ovp = HR82/83 = M0 自己的 OVP，表现上无错位。
+- 仅 Vset/Iset 有此 "reverse no-reload" 偏差。在用户使用流程中：从 M0 出发切到 Mx → 再切回 M0 = M0 的上次工作值（与 M0 已存 preset 可能不一致）。
+
+**当前决策（用户）**：暂不处理。原因：
+1. UI 默认在 M0；用户切换轨迹是 M0 → M1..M9，从不主动 "切回 M0"。
+2. 真要回到 M0 preset 时，用户可以走 `loadMemorySlot(0)` legacy 路径（软件模拟：读 M0 存储 + 4 次写工作寄存器）— 但该路径已被标 `@Deprecated`，且需求不强。
+3. 强行在 UI 端写四次工作寄存器会引入额外的写入冲突 / 与 FAST poll 旧值 merge 风险，得不偿失。
+
+**后续候选**：
+- Phase C 或 v1.1+ 范围内，若 UI 添加 "回到 M0 preset" 显式按钮，再考虑走 legacy `loadMemorySlot(0)` 路径或新增一个 `quickSwitch(0)` + softload(0) 复合路径。
+- 现在不实现，**禁止 UI 主动调 `loadMemorySlot(0)`**（违反 @Deprecated 语义）。
+
 ## 下一阶段候选入口（按优先级，未启动）
 
 ### 1. Phase B.5 — 旧路径残留 audit

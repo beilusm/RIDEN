@@ -149,6 +149,29 @@ class MockModbusService implements ModbusService {
     return _slots[index];
   }
 
+  /// Phase B.1 — mock bulk-read all 10 memory slots.  The mock's
+  /// `_slots` map is the source of truth, so we synthesise the
+  /// [MemorySlot] list directly without going through the simulated
+  /// register array (the same approach [readRawRegisters] uses for
+  /// HR[80..119]).
+  @override
+  Future<List<MemorySlot>> readAllMemorySlots() async {
+    final result = <MemorySlot>[];
+    for (int s = 0; s < 10; s++) {
+      final raw = _slots[s];
+      if (raw != null && raw.length >= 4) {
+        result.add(MemorySlot(
+          index: s,
+          vSet: raw[0] / 100.0,
+          iSet: raw[1] / 1000.0,
+          ovp: raw[2] / 100.0,
+          ocp: raw[3] / 1000.0,
+        ));
+      }
+    }
+    return result;
+  }
+
   @override
   Future<void> setOVP(double volts) async {
     _ovp = volts.clamp(0, 62);
@@ -186,6 +209,12 @@ class MockModbusService implements ModbusService {
     regs[19] = _quickSlot;
     regs[39] = _capacityMah;
     regs[41] = _energyMwh;
+    // Phase B.1 — HR82/HR83 (active OVP/OCP) intentionally NOT
+    // populated here: they are the SAME register bytes as M0 slot
+    // storage (datasheet address-overlap, see register_definition).
+    // The slot-loop below populates regs[80..119] which includes the
+    // M0 OVP/OCP at regs[82]/[83].  Setting them separately would be
+    // dead code (loop overwrites).
     regs[72] = 3; // screen brightness (legacy mock default)
     for (int s = 0; s < 10; s++) {
       final raw = _slots[s];

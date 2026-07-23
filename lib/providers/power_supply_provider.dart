@@ -61,7 +61,6 @@ class PowerSupplyProvider extends ChangeNotifier {
   final Map<int, List<double>> _slots = {};
   List<double>? slotValues(int index) => _slots[index];
 
-  int _bgSlotIndex = 0;
   Timer? _bgSlotTimer;
   bool _slotsLoaded = false;
 
@@ -192,16 +191,13 @@ class PowerSupplyProvider extends ChangeNotifier {
 
   void _startBgSlotRefresh() {
     if (_slotsLoaded) return;
-    _bgSlotTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (_bgSlotIndex >= 10) {
-        _bgSlotTimer?.cancel();
-        _bgSlotTimer = null;
-        _slotsLoaded = true;
-        return;
-      }
-      _loadOneSlot(_bgSlotIndex);
-      _bgSlotIndex++;
-    });
+    // Phase B.1 — single bulk read (HR[80..119] = 40 registers in one
+    // RTU round-trip).  Previously this used a 500ms Timer × 10 firing
+    // 10 individual `readMemorySlot(i)` requests — worst-case ~2.5s
+    // total.  Now one call completes in ~250ms.  Failure path falls
+    // back to the worker's own SLOW poll, which already fills in
+    // `memorySlots` via the dataStream listener in [_onData].
+    refreshAllSlots();
   }
 
   Future<void> _loadOneSlot(int index) async {
@@ -216,20 +212,29 @@ class PowerSupplyProvider extends ChangeNotifier {
     }
   }
 
+  /// Bulk-refresh all 10 memory slots.  Phase B.1 — previously issued
+  /// 10 sequential `readMemorySlot(i)` calls (one 4-register Modbus
+  /// RTU each, ~250ms per request → up to ~2.5s total when the device
+  /// was slow).  Now uses [ModbusService.readAllMemorySlots] — a
+  /// single 40-register bulk read of HR[80..119], one RTU round-trip
+  /// (~250ms typical, ~500ms worst-case on slow devices).
   Future<void> refreshAllSlots() async {
-    for (int i = 0; i < 10; i++) {
-      try {
-        final raw = await _service.readMemorySlot(i);
-        if (raw != null && raw.length >= 4) {
-          _slots[i] = [raw[0] / 100.0, raw[1] / 1000.0, raw[2] / 100.0, raw[3] / 1000.0];
-        }
-      } catch (e) {
-        debugPrint('[PROVIDER] refreshAllSlots($i) failed: $e');
+    try {
+      final t = Stopwatch()..start();
+      final slots = await _service.readAllMemorySlots();
+      t.stop();
+      debugPrint('[PROVIDER] refreshAllSlots bulk-read '
+          '${slots.length}/10 slots in ${t.elapsedMilliseconds}ms');
+      for (final s in slots) {
+        _slots[s.index] = [s.vSet, s.iSet, s.ovp, s.ocp];
       }
+      _slotsLoaded = true;
+      _bgSlotTimer?.cancel();
+      _bgSlotTimer = null;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('[PROVIDER] refreshAllSlots failed: $e');
     }
-    _slotsLoaded = true;
-    _bgSlotTimer?.cancel();
-    notifyListeners();
   }
 
   // ── Optimistic write helpers ───────────────────────────────────
@@ -306,7 +311,34 @@ class PowerSupplyProvider extends ChangeNotifier {
     _activeSlot = slotIndex;
     notifyListeners();
 
+    // Phase B.1 — OVP/OCP are per-slot (user clarification after
+    // hardware regression).  The active OVP/OCP values live at the
+    // slot's storage address HR[80+N*4+2 / 80+N*4+3], NOT at HR82/83
+    // (which is M0's storage and only reflects M0's OVP/OCP per the
+    // datasheet address-overlap note in register_definition.dart:546).
+    // Switching to M1 → device uses M1's OVP from HR86/87; the UI
+    // must read those same bytes, not HR82/83.
+    final slotBase = 80 + slotIndex * 4;
+    final slotOvpAddr = slotBase + 2;
+    final slotOcpAddr = slotBase + 3;
+
     try {
+      // Phase B.1 — capture BEFORE snapshot for debug log so
+      // M0↔M1/M2 bidirectional switches can be diffed in the console.
+      final before = await _service.readRawRegisters(
+          dedup: 'qsw_pre', expireMs: 1500);
+      if (before != null && before.length >= 84) {
+        debugPrint('[QSW] before M$slotIndex  '
+            'HR19=${_reg(before, 19)}  '
+            'HR8=${_reg(before, 8) / 100.0}V  '
+            'HR9=${_reg(before, 9) / 1000.0}A  '
+            'M${slotIndex}OVP=${_reg(before, slotOvpAddr) / 100.0}V  '
+            'M${slotIndex}OCP=${_reg(before, slotOcpAddr) / 1000.0}A');
+      } else {
+        debugPrint('[QSW] before M$slotIndex  '
+            'read failed/null (len=${before?.length})');
+      }
+
       await _service.quickSwitch(slotIndex);
       // Allow ~600ms for the device firmware to apply the slot preset.
       // 600ms is comfortably above the FAST poll interval (150ms × ~4
@@ -330,13 +362,39 @@ class PowerSupplyProvider extends ChangeNotifier {
           protectionStatus: raw[16],
           isConstantCurrent: raw[17] == 1,
           outputEnabled: raw[18] == 1,
+          // Phase B.1 — OVP/OCP for the ACTIVE slot.  Source = slot's
+          // own storage at HR[80+slot*4+2/3].  Reading HR82/83 instead
+          // would show M0's OVP/OCP regardless of active slot (that
+          // was the pre-fix bug — UI kept showing M0 protection
+          // values even after switching to M1/M2).
+          ovp: raw.length > slotOvpAddr
+              ? raw[slotOvpAddr] / 100.0
+              : _data.ovp,
+          ocp: raw.length > slotOcpAddr
+              ? raw[slotOcpAddr] / 1000.0
+              : _data.ocp,
         );
         notifyListeners();
+        // Phase B.1 — AFTER snapshot.  Key: HR19 must match slotIndex
+        // (device-side confirmation), HR8/HR9 should match the slot's
+        // stored preset, OVP/OCP come from the slot's own storage.
+        if (raw.length >= 84) {
+          debugPrint('[QSW] after  M$slotIndex  '
+              'HR19=${_reg(raw, 19)} (expect=$slotIndex)  '
+              'HR8=${_reg(raw, 8) / 100.0}V  '
+              'HR9=${_reg(raw, 9) / 1000.0}A  '
+              'M${slotIndex}OVP=${_reg(raw, slotOvpAddr) / 100.0}V  '
+              'M${slotIndex}OCP=${_reg(raw, slotOcpAddr) / 1000.0}A');
+        }
       }
     } catch (e) {
       debugPrint('[PROVIDER] quickSwitch M$slotIndex FAILED: $e');
     }
   }
+
+  /// Bounds-safe accessor used by [quickSwitch] debug logs.
+  int _reg(List<int> regs, int addr) =>
+      addr < regs.length ? regs[addr] : -1;
 
   @Deprecated('Use quickSwitch(slotIndex) instead — Phase B replaced '
       'this 4-write path with a single HR[19] quick-switch.  Kept '

@@ -68,6 +68,18 @@ abstract class ModbusService {
   /// Returns [vSetRaw, iSetRaw, ovpRaw, ocpRaw] or null on failure.
   Future<List<int>?> readMemorySlot(int slotIndex);
 
+  /// Bulk-read all 10 memory slots (HR[80..119]) in a single Modbus RTU
+  /// round-trip.  Returns a list of parsed [MemorySlot] objects — slots
+  /// whose registers fell outside a partial read are skipped, so the
+  /// returned list may have fewer than 10 entries on truncated reads.
+  ///
+  /// Phase B.1 — replaces the previous `for (i in 0..9) readMemorySlot(i)`
+  /// cycle in [PowerSupplyProvider.refreshAllSlots] / [_startBgSlotRefresh]
+  /// (10 sequential 4-register reads, ~250ms each → worst-case ~2.5s).
+  /// One bulk 40-register read is ~250ms total and exposes slot storage
+  /// latency comparable to a single FAST poll cycle.
+  Future<List<MemorySlot>> readAllMemorySlots();
+
   /// Convenience: set OVP (over-voltage protection) — device-specific.
   Future<void> setOVP(double volts);
 

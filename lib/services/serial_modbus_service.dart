@@ -190,6 +190,32 @@ class SerialModbusService implements ModbusService {
         Future.value(null);
   }
 
+  /// Phase B.1 — bulk-read all 10 memory slots in one Modbus RTU
+  /// round-trip (HR[80..119], 40 consecutive registers).  Replaces
+  /// the provider's prior 10× `readMemorySlot(i)` cycle in
+  /// [readAllRegisters] / [readRawRegisters]-driven slot refresh —
+  /// 10 RTU requests reduced to 1.
+  @override
+  Future<List<MemorySlot>> readAllMemorySlots() async {
+    final regs = await _worker?.readRegisters(80, 40,
+            prio: 5, group: 'user') ??
+        <int>[];
+    final slots = <MemorySlot>[];
+    for (int s = 0; s < 10; s++) {
+      final base = s * 4;
+      if (base + 3 < regs.length) {
+        slots.add(MemorySlot(
+          index: s,
+          vSet: regs[base] / 100.0,
+          iSet: regs[base + 1] / 1000.0,
+          ovp: regs[base + 2] / 100.0,
+          ocp: regs[base + 3] / 1000.0,
+        ));
+      }
+    }
+    return slots;
+  }
+
   // ── Convenience ────────────────────────────────────────────────
 
   @override
