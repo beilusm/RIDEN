@@ -44,7 +44,7 @@ class RegisterConflicts {
   static const List<RegisterConflict> all = [
     RegisterConflict(
       address: 14,
-      title: 'Input Voltage — multiple scale factors',
+      title: '[RESOLVED] Input Voltage — /100 confirmed, /10 legacy path',
       issue:
           '同一个寄存器在代码中有两种 scale：'
           '/100（inputVoltage）和 /10（inputVoltageAlt）。'
@@ -61,13 +61,15 @@ class RegisterConflicts {
           '而 PowerSupplyData.inputVoltageAlt 字段使用 /10 路径，二者差异 10×。'
           'RegisterTable 中 HR[14] 标记 conflict，scale=1 不缩放。',
       resolution:
-          '查 RIDEN Modbus 寄存器手册，确认 HR[14] 的物理单位与 scale。'
-          '若 /100 正确：删除 inputVoltageAlt 字段，清除 HR[2] 错误注释。'
-          '若 /10  正确：修正 worker._fastPoll 和 _parseAllRegs 的 /100 路径。',
+          'RESOLVED (datasheet clarification, Phase B.2): /100 confirmed '
+          'correct for HR[14] inputVoltage — value / 100 = 实际电压. /10 '
+          '路径 (PowerSupplyData.inputVoltageAlt) 是历史遗留字段，Phase '
+          'B.2 不在范围内清理，作为 code debt 保留. HR[2] 错误注释 '
+          '(见 address 2 conflict) 同样作为历史注释 debt 保留，不影响运行。',
     ),
     RegisterConflict(
       address: 82,
-      title: 'HR[82] — top-level OVP vs M0 slot OVP overlap',
+      title: '[RESOLVED] HR[82] — M0 slot OVP storage, not active OVP',
       issue:
           'HR[82] 同时被当作"顶层 OVP 设定"（setOVP）'
           '和"M0 记忆槽的 OVP 字段"（saveMemorySlot(0, ...)）写入。'
@@ -83,14 +85,19 @@ class RegisterConflicts {
           'RegisterTable 中 HR[82] 标记 conflict；isWritable 返回 false，'
           'RegisterPage 编辑按钮被禁用，避免加重歧义。',
       resolution:
-          '查 datasheet 确认 HR[82] 在协议中的角色：'
-          '① 若是顶层 OVP：M0 的 OVP 字段应改用其他地址（也许>119）。'
-          '② 若是 M0 的 OVP：setOVP 应改写其它地址（也许>119 或 HR[72] 系列）。'
-          '在确认前禁止让 UI 写 HR[82]。',
+          'RESOLVED (datasheet clarification, Phase B.2): HR[82] = M0 '
+          'Memory Slot 的 OVP storage，不是 active OVP。Active OVP '
+          '由 HR[19] 当前 slot 决定，地址 = HR[80 + activeSlot*4 + 2] '
+          '(M0=82, M1=86, M2=90, …)。设备不存在独立"顶层 OVP"寄存器；'
+          '原 ① 不成立、② 成立。代码修复路径已在 Phase B.2 实施：'
+          'worker FAST poll 仍读 HR[82] 但 service 层不再采纳 '
+          'snap.ovp/ocp 作为 active 值（_sub.listen 守卫），provider '
+          '从 quickSwitch fullPoll 和 SLOW poll slot-sync 解码 active '
+          'slot storage。本 conflict 保留为历史审计，issue/codePaths 不删。',
     ),
     RegisterConflict(
       address: 83,
-      title: 'HR[83] — top-level OCP vs M0 slot OCP overlap',
+      title: '[RESOLVED] HR[83] — M0 slot OCP storage, not active OCP',
       issue:
           'HR[83] 同 HR[82]，顶层 OCP 与 M0 槽 OCP 字段地址重叠。',
       codePaths: [
@@ -100,7 +107,12 @@ class RegisterConflicts {
         'lib/services/modbus_worker.dart:283           _slowPoll idx=0 读 HR[80..83] ← M0 槽读取',
       ],
       sideEffect: '同 HR[82]。RegisterTable 中标记 conflict，禁止写入。',
-      resolution: '同 HR[82]，与 datasheet 一并解决。',
+      resolution:
+          'RESOLVED (datasheet clarification, Phase B.2): HR[83] = M0 '
+          'Memory Slot 的 OCP storage，不是 active OCP。Active OCP '
+          '由 HR[19] 当前 slot 决定，地址 = HR[80 + activeSlot*4 + 3] '
+          '(M0=83, M1=87, M2=91, …)。修复路径同 HR[82]，详见 '
+          'HR[82] resolution。本 conflict 保留为历史审计。',
     ),
     RegisterConflict(
       address: 15,
@@ -165,7 +177,7 @@ class RegisterConflicts {
     ),
     RegisterConflict(
       address: 2,
-      title: 'HR[2] — stale comment in PowerSupplyData',
+      title: '[RESOLVED] HR[2] — stale comment, never read by any path',
       issue:
           'lib/models/power_supply_data.dart:12  注释 "// HR[2] ÷ 10" '
           '把 HR[2] 标为 inputVoltage，但代码里并无任何路径真正读取 HR[2] — '
@@ -179,8 +191,11 @@ class RegisterConflicts {
           '预算过项时容易误以为 HR[2] 已被使用。RegisterTable 中 HR[2] 仍是 placeholder。'
           '当前不是真正的寄存器冲突，但是一条会误导后续维护者的注释。',
       resolution:
-          '删除 power_supply_data.dart:12 的 HR[2] 注释，并保留 HR[14] 作为 inputVoltage '
-          '的真实路径。可以考虑在 RegisterTable 中给 HR[2] 显式注明 unknown。',
+          'RESOLVED (datasheet clarification, Phase B.2): HR[14] /100 '
+          '编码已确认为 inputVoltage 正确路径（见 address 14 conflict），'
+          'HR[2] 无任何代码路径读取，注释为历史遗留错误。Phase B.2 不在 '
+          '范围内清理 power_supply_data.dart:12 注释，作为注释 debt 保留；'
+          '不影响运行，仅影响可读性。本 conflict 保留为历史审计。',
     ),
     RegisterConflict(
       address: 72,
