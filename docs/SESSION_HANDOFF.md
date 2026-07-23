@@ -285,7 +285,7 @@ fvm dart analyze lib | rg -i deprecated
 ```
 若全清空，再删除 abstract + Serial + Mock + provider 中四处实现；保留 `@Deprecated` 标注本身作为 commit 历史索引。
 
-### 2. Phase C — UI 新字段展示
+### 2. Phase C — UI 新字段展示（**Phase C 标识符已被 CH340 自动扫描占用，见上方 APPLIED 章节；此 UI 任务待重命名**）
 
 目标：把 Phase A/A.5/B 新加的 `PowerSupplyData` 字段在 UI 上呈现：
 
@@ -296,7 +296,7 @@ fvm dart analyze lib | rg -i deprecated
 
 入口：`lib/widgets/dashboard_panel.dart` 或新增 widget；RegisterPage V 列展示 + 编辑对话框。
 
-注意 CLAUDE.md 禁令：不发起新业务功能；本轮用户明确「不启动 Phase C」。
+注意 CLAUDE.md 禁令：不发起新业务功能；本轮用户明确「不启动 Phase C UI 展示」。Phase C 标识符现已被 CH340 自动扫描占用（见 APPLIED — Phase C 章节）。
 
 ### 3. quickSwitch 延迟优化
 
@@ -393,6 +393,34 @@ fvm dart analyze lib | rg -i deprecated
   - write 路径 reroute: `setOVP(v)` 仍 `writeRegister(82, ...)` — active≠0 时改不到 active slot OCP。需要 datasheet 写入语义硬件验证（Phase B.3 候选）。
   - PowerSupplyData.inputVoltageAlt 字段标 `@Deprecated` 并删除：当前保留为 default 0，无任何代码路径赋值，但字段本身仍在 copyWith / dartdoc 中。
   - quickSwitch(0) 不 reload M0 preset — 设备固件设计使然，UI 语义待决策（见 Phase B.1 已知设备行为章节）。
+
+
+### APPLIED — Phase C: CH340 串口自动扫描 + 400ms 自动重试 (`lib/services/serial_port_scanner.dart` + `lib/services/serial_port_enumerator.dart` + `serial_modbus_service.dart` + `lib/providers/power_supply_provider.dart` + `lib/app.dart`)
+
+- **触发**: 用户明确请求 CH340 串口自动扫描连接 + 无设备时每 0.4s 自动重试连接功能，override CLAUDE.md "不新增业务功能" 禁令（仅本次会话，禁令对其他 Phase 仍生效）。
+- **目标**: 设备固定使用 CH340 USB 转串口，不需要 Modbus 设备识别 — 只按 USB VID/PID 自动找到 RIDEN 设备串口；找不到时持续每 400ms 重试直到设备插入。
+- **新增文件**:
+  - `lib/services/serial_port_scanner.dart` — 纯 Dart 类，无 Flutter/dart:ffi import。`SerialPortScanner` 接收 `Future<List<UsbPortInfo>> Function() _enumerate` 注入回调；`scanCh340()` 返回 `SerialPortScanResult`（`found` / `portName` / `reason` / `scanned`）。失败路径返回 `SerialPortScanResult.notFound(reason, scanned: ...)`，成功路径返回 `portName` 扫到的 CH340 端口名。常量 `ch340VendorId=0x1A86` / `ch340ProductId=0x7523`。`SerialPortScanException` 携带 `reason` + `scanned` list，让 UI 可以显示"这些串口可见但都不是你的 RIDEN 设备"。`UsbPortInfo` 是 value-equal 数据类。
+  - `lib/services/serial_port_enumerator.dart` — 唯一一处生产 USB 枚举调用 `package:flutter_libserialport` 的地方。`enumerateUsbPortsSync()` 同步遍历 `SerialPort.availablePorts`，对每个端口开 `SerialPort(name)` 取 `vendorId` / `productId` 后 `dispose()`，单点 try/catch 跳过去失端口（hot-unplug race 不破坏整体 scan）。`enumerateUsbPortsViaIsolate()` = `Isolate.run(enumerateUsbPortsSync)` — 一次性 isolate，扫描后自动 kill。
+  - `test/auto_scan_retry_test.dart` — 8 个 fakeAsync 测试覆盖 400ms 重试 timer 行为。
+  - `test/serial_port_scanner_test.dart` — 12 个纯单元测试。
+  - `test/serial_connect_applies_scanner_test.dart` — 4 个 connect-integration 测试。
+- **修改文件**:
+  - `lib/services/serial_modbus_service.dart` — 构造函数新增 `scannerFactory: SerialPortScanner Function()` 参数（默认 `_defaultScannerFactory` 用 `enumerateUsbPortsViaIsolate`）。**connect() reorder: scan 在 spawn 之前** — 失败 cycle 不 spawn worker（~50ms→~30ms/次，auto-scan 400ms 间隔场景关键优化）。flow: zombie check → duplicate guard → scan/port-resolve if port==null → spawn worker → subscribe dataStream → `_worker.connect`。explicit port 路径完全 bypass scanner — SerialPanel 手动选择保留。catch 块已包含 null-aware `forceKill` spawned worker + 清理 `_sub`；scan-before-spawn order 让 scan 失败时 _worker/_sub 都为 null，cleanup 是 no-op。
+  - `lib/providers/power_supply_provider.dart` — 新增 `_autoScanTimer` + `static const _autoScanInterval = Duration(milliseconds: 400)` + `startAutoScan()` / `stopAutoScan()` / `isAutoScanning` getter + `_autoScanTick()`。`startAutoScan` idempotent（`if (_autoScanTimer != null) return` guard）+ 第一次 tick 同步触发 app boot 不等 400ms。tick 走 `_connected || _connecting` guard（已连接 ticks no-op 但 timer 不断）。`_autoScanTick` 内部 `connect().catchError((_) {})` 吞掉失败让 Timer.periodic 继续每 400ms 重试。`disconnect()` 顶部调 `stopAutoScan()` 不打脸。`dispose()` 兜底 `stopAutoScan()`。Worker crash (P1-2 `_handleWorkerError` → CommStatus.error) 不碰 timer → 下次 400ms tick 自动 relight connect 无需用户介入。
+  - `lib/app.dart` — `_PowerSupplyShellState.initState` 的 `addPostFrameCallback` 改为 `startAutoScan()`（替代原单次 `connect()`）。
+  - `pubspec.yaml` — `dev_dependencies` 加 `fake_async: ^1.3.1`（auto-scan retry 测试用）。
+- **遵守禁令**:
+  - 不修改 `ModbusScheduler` / `ModbusWorker` (`modbus_worker.dart` Worker 入口和 `_accumulateRead` 250ms 不动)
+  - 不修改 `quickSwitch` / polling 架构 / FAST 150ms / SLOW 1000ms
+  - 不修改数据模型 / 寄存器定义 / `register_conflicts`
+  - 不触碰 UI 层（SerialPanel 手动端口选择仍在，只是 boot 自动连接现在能自动找到 CH340 并自动重试）
+- **测试**:
+  - `test/serial_port_scanner_test.dart` — 12 个纯单元测试，注入 fake enumerator。覆盖：CH340 标识符常量、多串口中找到 CH340、CH340 是唯一端口、多个 CH340 时 first-match 策略、同 VID 错 PID 不匹配、空列表 notFound、非 CH340 端口 notFound + reason 文本含 "none matches CH340"、非 USB 端口 null VID/PID 不匹配、enumerator 抛错被 collapse 到 notFound、`UsbPortInfo` value-equal、`SerialPortScanResult.found` derived property、`SerialPortScanException` 携带 scanned。
+  - `test/serial_connect_applies_scanner_test.dart` — 4 个 connect-integration 测试，注入 `scannerFactory` 走真实 `SerialModbusService.connect` 路径（spawns 真实 `ModbusWorkerHandle`）。覆盖：not-found 抛 `SerialPortScanException` + `isConnected=false`、not-found reason 描述 "none matches CH340"、scanner 找到端口后 _worker.connect 收到该端口名（通过后续错误不是 `SerialPortScanException` 来验证 got past scanner）、explicit port 完全 bypass scanner（scanner callback `_failIfCalled` 任何调用都 fail）。
+  - `test/auto_scan_retry_test.dart` — 8 个 fakeAsync 测试。覆盖：`isAutoScanning` 状态、startAutoScan 第一次 tick 同步触发、connected 时 timer 仍 armed 但 ticks no-op、每 400ms 周期性重试直到 connect 成功、`disconnect()` 停止 timer 不打脸、worker crash (P1-2 `simulateCrash`) 后 timer 仍活着 400ms 后自动 relight、`dispose()` 取消 timer 无泄漏、`startAutoScan` 幂等（重复调用不会 double tick rate 到 200ms）。
+- **验证**: `fvm flutter analyze` 21 issues / 0 新增（与 Phase B.2 baseline 严格相等）；`fvm flutter test` 24 → 48 PASS（24 baseline + 12 scanner pure + 4 connect-integration + 8 auto-scan retry via fakeAsync）。
+- **新增文件**: `lib/services/serial_port_scanner.dart`, `lib/services/serial_port_enumerator.dart`, `test/serial_port_scanner_test.dart`, `test/serial_connect_applies_scanner_test.dart`, `test/auto_scan_retry_test.dart`。
 
 
 ### Pre-existing — P2

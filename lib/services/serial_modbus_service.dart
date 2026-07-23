@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart';
 import '../models/power_supply_data.dart';
 import 'modbus_service.dart';
 import 'modbus_worker.dart';
+import 'serial_port_enumerator.dart';
+import 'serial_port_scanner.dart';
 
 /// [ModbusService] implementation that proxies all Modbus I/O to a
 /// worker isolate.  The UI isolate never touches SerialPort directly —
@@ -20,6 +22,26 @@ class SerialModbusService implements ModbusService {
   @override bool get isConnected => _worker != null;
   @override Stream<PowerSupplyData> get dataStream => _dataController.stream;
   final _dataController = StreamController<PowerSupplyData>.broadcast();
+
+  /// Factory that builds a fresh [SerialPortScanner] for each
+  /// [connect] call when the caller didn't explicitly specify a port.
+  ///
+  /// Default wires the scanner's enumerator to
+  /// [enumerateUsbPortsViaIsolate] — a one-shot isolate that runs
+  /// libserialport's `sp_get_port_usb_vid_pid` outside the UI
+  /// isolate (铁律: UI isolate 永远不直接访问 SerialPort).
+  ///
+  /// Tests inject a fake factory returning a [SerialPortScanner]
+  /// with a synthetic enumerator — no isolate spawned, no FFI
+  /// touched, deterministic fake input.
+  final SerialPortScanner Function() _scannerFactory;
+
+  SerialModbusService({
+    SerialPortScanner Function()? scannerFactory,
+  }) : _scannerFactory = scannerFactory ?? _defaultScannerFactory;
+
+  static SerialPortScanner _defaultScannerFactory() =>
+      const SerialPortScanner(enumerateUsbPortsViaIsolate);
 
   // ── Lifecycle ──────────────────────────────────────────────────
 
@@ -47,6 +69,37 @@ class SerialModbusService implements ModbusService {
     // handles competing for the same serial fd).
     if (_worker != null) return;
     try {
+      // CH340 auto-scan: pick the host port matching VID 0x1A86 /
+      // PID 0x7523 when the caller didn't explicitly specify one.
+      //
+      // Order matters: scan runs BEFORE [ModbusWorkerHandle.spawn]
+      // so a "no CH340 found" failure avoids the ~30-50ms cost of
+      // spawning + forceKilling a worker isolate each cycle.  This
+      // is the hot path for [PowerSupplyProvider]'s 400ms auto-scan
+      // retry timer — a typical offline host cycles scan-only at
+      // ~30ms / tick rather than ~80ms / tick when the order was
+      // reversed.
+      //
+      // Absence of CH340 surfaces as a [SerialPortScanException]
+      // that propagates through connect()'s catch path.  Because
+      // we scan before spawning, the worker is null at the throw
+      // site and the catch block's cleanup is a no-op.
+      //
+      // Preserved: explicit `port` is honoured as-is (UI's manual
+      // SerialPanel picker) — the scanner only runs on the default
+      // path where the caller didn't specify a port.
+      String? effectivePort = port;
+      if (effectivePort == null) {
+        final result = await _scannerFactory().scanCh340();
+        if (!result.found) {
+          throw SerialPortScanException(result.reason,
+              scanned: result.scanned);
+        }
+        effectivePort = result.portName;
+        debugPrint('[SERIAL] auto-scan picked $effectivePort '
+            '(${result.reason})');
+      }
+
       _worker = await ModbusWorkerHandle.spawn();
       // P1-2: route worker crashes through _handleWorkerError so the
       // dead handle is nullified, _sub is cancelled, and the UI is
@@ -106,13 +159,18 @@ class SerialModbusService implements ModbusService {
         _statOkFast++;
       });
 
-      await _worker!.connect(port: port, baudRate: baudRate, address: address);
+      await _worker!.connect(
+          port: effectivePort, baudRate: baudRate, address: address);
       _startStatTimer();
     } catch (e) {
-      // P1-2: connect failed (port open error, handshake timeout,
-      // etc.).  Tear down the spawned-but-unusable handle so the
-      // next connect() call can spawn a fresh one instead of
-      // early-returning on the stale `_worker != null` check.
+      // Connect failed (scanner found no CH340, worker spawn /
+      // handshake timeout, port-open error, etc.).  Tear down whatever
+      // was spawned so the next connect() can start fresh instead of
+      // early-returning on a stale `_worker != null`.
+      //
+      // The scan-before-spawn order means _worker / _sub may both
+      // still be null when a [SerialPortScanException] throws — the
+      // null-aware cleanup below is then a no-op.
       try {
         _sub?.cancel();
         _sub = null;

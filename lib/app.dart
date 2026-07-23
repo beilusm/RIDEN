@@ -33,10 +33,20 @@ class _PowerSupplyShellState extends State<PowerSupplyShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // App boot: arm the auto-scan timer so the app keeps probing
+      // for a CH340 every ~400ms while no device is connected.
+      // Tick guards (`_connected || _connecting`) make subsequent
+      // ticks no-op once a real handshake lands.
+      //
+      // User-initiated disconnect() stops the timer entirely so the
+      // user's explicit disconnect is honoured.  Worker crash (P1-2)
+      // leaves the timer alive → next tick relights connect() → the
+      // app auto-recovers from yanked-USB / device reboot without
+      // requiring a manual button press.
       try {
-        await context.read<PowerSupplyProvider>().connect();
+        context.read<PowerSupplyProvider>().startAutoScan();
       } catch (e) {
-        debugPrint('Serial connect error: $e');
+        debugPrint('startAutoScan error: $e');
       }
     });
   }

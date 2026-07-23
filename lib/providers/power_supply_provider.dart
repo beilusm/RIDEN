@@ -64,6 +64,65 @@ class PowerSupplyProvider extends ChangeNotifier {
   Timer? _bgSlotTimer;
   bool _slotsLoaded = false;
 
+  // ── Auto-scan retry timer ──────────────────────────────────────
+  // Polls [connect] at [_autoScanInterval] cadence while no device is
+  // connected.  Tick guards (`_connected || _connecting`) make the
+  // timer effectively free once a device is found — the periodic
+  // callbacks turn into cheap no-ops until the user explicitly
+  // disconnects (which cancels the timer) or the worker crashes
+  // (P1-2: `_connected` flips false → next tick relights the scan).
+  Timer? _autoScanTimer;
+  static const Duration _autoScanInterval = Duration(milliseconds: 400);
+
+  /// Whether the auto-scan retry timer is currently active.
+  ///
+  /// Exposed for UI / tests so consumers can assert "the app is in
+  /// auto-retry mode" without reaching into private state.  Read-only.
+  bool get isAutoScanning => _autoScanTimer?.isActive ?? false;
+
+  /// Begin polling [connect] every [_autoScanInterval] until a
+  /// device handshake succeeds (subsequent [connect] calls are
+  /// no-ops via the `_connected` guard) or [stopAutoScan] is
+  /// called.
+  ///
+  /// Idempotent — calling twice with an active timer is a no-op.
+  /// First tick fires immediately so the user sees a connect attempt
+  /// without waiting 400ms on app boot.
+  ///
+  /// Semantics:
+  ///   * app boot (app.dart initState) → startAutoScan
+  ///   * connect succeeded → timer stays alive but ticks no-op
+  ///   * user disconnect() → stopAutoScan (don't re-fire)
+  ///   * worker crash (P1-2 _handleWorkerError path) → timer still
+  ///     alive → next tick relights connect → automatic re-connect
+  ///   * SerialPanel manual CONNECT button → if user wants auto-retry
+  ///     after manual port failure they call startAutoScan again
+  void startAutoScan() {
+    if (_autoScanTimer != null) return; // already armed
+    // Fire the first tick synchronously so app boot starts the scan
+    // immediately rather than waiting 400ms for the first tick.
+    _autoScanTick();
+    _autoScanTimer = Timer.periodic(_autoScanInterval, (_) {
+      _autoScanTick();
+    });
+  }
+
+  /// Stop the auto-scan retry timer.  Called by [disconnect] so the
+  /// app doesn't immediately re-fire connect after the user
+  /// explicitly disconnects — that would make DISCONNECT a no-op.
+  void stopAutoScan() {
+    _autoScanTimer?.cancel();
+    _autoScanTimer = null;
+  }
+
+  void _autoScanTick() {
+    if (_connected || _connecting) return;
+    // connect() rethrows on failure — swallow so the periodic timer
+    // doesn't surface an unhandled Future error.  connect()'s catch
+    // block already debugPrints the cause.
+    connect().catchError((Object _) {});
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────
 
   Future<void> connect({String? port, int baudRate = 115200, int address = 1}) async {
@@ -92,6 +151,10 @@ class PowerSupplyProvider extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    // Stop the auto-scan timer so the user's explicit disconnect is
+    // honoured — without this, the next ~400ms tick would call
+    // connect() again, making the DISCONNECT button a no-op.
+    stopAutoScan();
     _healthTimer?.cancel();
     _bgSlotTimer?.cancel();
     _bgSlotTimer = null;
@@ -119,6 +182,7 @@ class PowerSupplyProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    stopAutoScan();
     _healthTimer?.cancel();
     _bgSlotTimer?.cancel();
     _sub?.cancel();
