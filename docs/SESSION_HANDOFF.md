@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 桌面上位机。已完成串口连接面板 + 寄存器模式页面 + RegisterDefinition Schema。当前阶段：**Production Hardening — Phase 3 P0 修复 + P1-3 修复全部 APPLIED。Verdict: Production Ready (P0 范围)**。
+RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.1 已正式 Release (FROZEN)，Phase A/A.5/B 寄存器表对齐 + HR19 quickSwitch 迁移已固化在 commit `b4d7f09`。下一阶段候选：Phase B.5 残留 audit / Phase C UI 展示 / quickSwitch 延迟优化**。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -202,50 +202,72 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
 
 # Recommended Starting Point (Next Session)
 
-Phase 1 / Phase 2 / Phase 3 / Phase W1 全部 APPLIED。下个会话可能的工作:
+## 当前架构状态（截至 b4d7f09）
 
-## 优先项：Windows Release 实测 (Phase W2)
+| 项 | 值 |
+|---|---|
+| 仓库 | `https://github.com/beilusm/RIDEN`（公开，已上线） |
+| HEAD | `b4d7f09 Complete register schema alignment and migrate memory slots to quickSwitch` |
+| Tags | `v1.0.0` (Windows-only 历史) / `v1.0.1` (Latest, FROZEN, 4 assets) |
+| 版本来源 5 处 | S1 pubspec `1.0.1+1` ✓ / S2 env.sh `1.0.1` ✓ / S3 env_windows.sh `1.0.1` ✓ / S4 Runner.rc `"1.0.0"` 接受不校验 / S5 metainfo CI 注入 ✓ |
+| 通信架构 | ModbusScheduler + polling 间隔 (FAST 150ms / SLOW 1000ms / `_accumulateRead` 250ms) 全部冻结 |
+| 寄存器表 | `RegisterDefinition` HR0..HR19 已对齐 datasheet，地址格式 `0xXXXX` |
+| 切换入口 | HR19 quickSwitch 已硬件验证为 Memory Slot 唯一真实切换入口；UI 全部走 `quickSwitch()`，旧 `loadSlot` / `loadMemorySlot` 标 `@Deprecated` 保留 |
+| `flutter analyze` | 28 issues，0 新增 |
+| `flutter test` | 12/12 PASS |
 
-Phase W1 完成了 Linux 端可做的所有 Windows 发布准备工作：Runner.rc 4 字段、main.cpp 标题、20KB .ico、env_windows.sh、make_windows_zip.sh、build_windows_release.sh，README/CLAUDE 已更新。**Phase W2 仅能在 Windows 主机执行**，验证步骤见 SESSION_HANDOFF "Phase W2 — Windows 实测清单"。
+## 下一阶段候选入口（按优先级，未启动）
 
-简版：
-1. 在 Windows 10/11 主机：Visual Studio 2022 + Flutter 3.44+ + FVM + Python 3 + Git Bash/WSL
-2. `fvm flutter pub get`
-3. `bash packaging/scripts/build_windows_release.sh`
-4. 验证 `release/RIDEN_PowerSupply-1.0.0-windows-x64.zip` 存在且 `sha256sum -c SHA256SUMS-windows.txt` 通过
-5. 解压 ZIP 到干净目录，双击 `riden_power_supply.exe` 验证启动
-6. 插入 CH340 → 验证 serial 通信、Worker lifecycle
-7. 反馈 W2.1-W2.7 各步骤结果至 SESSION_HANDOFF
+### 1. Phase B.5 — 旧路径残留 audit
 
-## 优先项：发布上线（与 Phase W2 可并行）
+目标：确认 `loadSlot` / `loadMemorySlot` 无任何内部调用面后真删除实现。
 
-1. `git init` + `.gitignore` 已就绪（Phase 3 已补完）。
-2. 首次 commit + push 到 GitHub `https://github.com/beilusm/RIDEN`（需要先创建该仓库）。
-3. GitHub repo 上线后，重新运行 `appstreamcli validate`（去掉 `--no-net`）— AppStream 的 3 个 `url-not-reachable` warning 应消失。
-4. 上传到 GitHub Release v1.0.0：
-   - Linux: `RIDEN_PowerSupply-1.0.0-x86_64.AppImage` + `SHA256SUMS` + `RELEASE_NOTES-1.0.0.md`
-   - Windows: `RIDEN_PowerSupply-1.0.0-windows-x64.zip` + `SHA256SUMS-windows.txt`
-5. 在 `linux/metainfo/io.github.beilusm.ridenps.metainfo.xml` 里视情况追加 GitHub Release 的 URL（消除 AppStream warning 根因）。
+入口：
+```bash
+rg "loadSlot\(|loadMemorySlot\(" lib/
+fvm dart analyze lib | rg -i deprecated
+```
+若全清空，再删除 abstract + Serial + Mock + provider 中四处实现；保留 `@Deprecated` 标注本身作为 commit 历史索引。
 
-## 若处理 P1-1 (`_onPollMiss` 死代码)
-1. 定位 `_onPollMiss()` (`power_supply_provider.dart:184-191`)。
-2. 找到 FAST/SLOW poll miss 的 hook 点 (是 `_onData` 后还是 `_healthTimer` tick 处)。
-3. 接入 `_onPollMiss()` 调用，使 `_consecutiveFails++` 触发 `CommStatus.error` 状态机。
-4. `fvm flutter analyze`。
+### 2. Phase C — UI 新字段展示
 
-## 若处理 P1-2 (zombie `_worker`)
-1. 在 `serial_modbus_service.dart:30-32` 的 `onError` 回调中，不只 debugPrint。
-2. 加 `if (identical(_worker, _currentWorkerHandle))` 后置 null (借用 B.1 identical 模式)。
-3. 触发 `_dataController.add(PowerSupplyData(commStatus: CommStatus.offline))` 通知 UI。
-4. Provider 需要在 dataStream listener 中检测 offline 状态并置 `_connected = false` + `notifyListeners()`。
-5. `fvm flutter analyze`。运行时验证 crash → 自动 reconnect 路径。
+目标：把 Phase A/A.5/B 新加的 `PowerSupplyData` 字段在 UI 上呈现：
 
-## 后续版本（延期项，见 Phase 3 "Not Implemented"）
+- `firmwareVersion` (HR3) 显示（Dashboard / About 页 / RegisterPage V 列）
+- `keyLock` (HR15) 状态徽章（Dashboard 顶部）
+- `protectionStatus` (HR16) OVP/OCP/OTP 告警徽章（红色高亮）
+- RegisterPage 用户编辑写入路径完善（新字段对应 R/W 入口）
+
+入口：`lib/widgets/dashboard_panel.dart` 或新增 widget；RegisterPage V 列展示 + 编辑对话框。
+
+注意 CLAUDE.md 禁令：不发起新业务功能；本轮用户明确「不启动 Phase C」。
+
+### 3. quickSwitch 延迟优化
+
+目标：当前 `PowerSupplyProvider.quickSwitch` 固定 `await 600ms` 后 readRawRegisters；改为短轮询 (200ms × 最多 5 次) 检测 HR8 是否变为 slot preset target，未变化才退化为固定等待。
+
+入口：`lib/providers/power_supply_provider.dart` 中 `quickSwitch()` 方法。
+
+## 仍 OPEN 的 P1（不致 hang，UX 退化）
+
+### P1-1 `_onPollMiss` 死代码 (`power_supply_provider.dart:184-191`)
+- `_consecutiveFails` 永远=0 → `CommStatus.error` 永不达到，UI 仅升级到 `timeout`。
+- 修复：在 FAST/SLOW poll miss 路径接入 `_onPollMiss()` 调用 → `_consecutiveFails++` → 触发 error 状态机。
+- 验证：`fvm flutter analyze` + runtime log 检测 `CommStatus.error` 是否出现。
+
+### P1-2 zombie `_worker` 阻塞自动 reconnect (`serial_modbus_service.dart:30-32`)
+- worker crash 后 `onError` 回调只 debugPrint 不置 `_worker = null`，connect() 两级守卫拒绝。
+- 修复：在 `onError` 中 `if (identical(_worker, _currentWorkerHandle)) _worker = null`（借用 B.1 identical 模式）+ 触发 `_dataController.add(PowerSupplyData(commStatus: CommStatus.offline))` 通知 UI → Provider listener 置 `_connected = false` + `notifyListeners()` + 升级 `CommStatus.error`。
+- 验证：`fvm flutter analyze` + runtime 验证 crash → 自动 reconnect 路径。
+
+## 延期长后续版本（v1.1+，见 Phase 3 "Not Implemented"）
 
 - zsync / `--updateinformation` — AppImage 增量自动更新
 - GPG 签名 — `appimagetool -s` + 签名密钥
-- GitHub Actions CI — `packaging/scripts/build_release.sh` 迁移到 workflow
+- GitHub Actions CI — `packaging/scripts/build_release.sh` 迁移到 workflow（已超期：Phase L1.1/L1.2 已实施）
 - 多 distro 自动测试 — Ubuntu 22.04 / 24.04 / Fedora / Debian 测试矩阵
+- Runner.rc VERSION_AS_STRING 自动同步 (S4)
+- dev CI APP_VERSION 校验 (Phase L1.3)
 
 # Session Summary (本次会话最终交付)
 

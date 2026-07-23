@@ -55,6 +55,11 @@ FAST poll 和 SLOW poll 都发送 `PowerSupplyData` 到 UI。
 - FAST 包含所有测量字段 → `isFast = snapshot.setVoltage > 0` → 全量更新
 - SLOW 只含 slot 数据 → 仅合并 `memorySlots`
 
+### HR19 quickSwitch 是 Memory Slot 唯一真实切换入口（Phase A.5 硬件验证）
+设备固件用 HR19 (0x0013) 作为硬件 Memory Slot quick switch 入口：写 HR19=Mx 后设备固件自动加载对应 Mx 保存参数到当前工作寄存器（HR8 Vset / HR9 Iset / HR82 OVP / HR83 OCP）。Phase A.5 真机实测：HR19 0→1 触发 HR8 4.20V→5.00V + HR9 6.100A→5.000A，与 M1 preset 一致。
+
+旧 `loadMemorySlot()` 路径是软件模拟（读保存区 + 4 次写工作寄存器），现在标 `@Deprecated` 但实现保留。**UI 必须走 `quickSwitch()`**：write HR19 → 600ms 等待 → readRawRegisters HR0..HR120 → UI 用设备真实状态。
+
 ## 运行
 
 ```bash
@@ -149,6 +154,7 @@ static const _verboseLog = false; // set true for per-task debug logs
 - 不主动提交 git，除非用户明确要求
 - 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 / Phase L1.2 章节）
 - 任何代码修改完成后必须运行 `fvm flutter analyze` 验证 0 新 issue
+- 不重新启用 `@Deprecated` 的 `loadSlot()` / `loadMemorySlot()` — HR19 quickSwitch 已硬件验证为设备唯一真实切换入口，旧路径软件模拟仅供回退测试保留
 
 ## 当前 Patch 状态
 
@@ -164,3 +170,6 @@ static const _verboseLog = false; // set true for per-task debug logs
 - **P0 修复 + P1-3 修复 + Option B refactor**：APPLIED
 - **P1-1 (`_onPollMiss` 死代码)**：仍 OPEN
 - **P1-2 (zombie `_worker` 阻塞自动 reconnect)**：仍 OPEN
+- **Phase A — Register Schema 与 Worker 解码对齐**：APPLIED（HR3/HR7/HR15/HR16 新字段；auxVoltage/statusFlags `@Deprecated` 保留；quickSwitch 接口 + SerialImpl + Mock 实现）
+- **Phase A.5 — HR19 硬件快速切换验证**：APPLIED（真机 PASS — HR19 0→1 触发 HR8 4.20V→5.00V + HR9 6.100A→5.000A，与 M1 preset 一致；HR19 (0x0013) 是设备硬件 Memory Slot 切换入口）
+- **Phase B — UI 迁移到 quickSwitch**：APPLIED（UI 全部 loadSlot→quickSwitch；`loadSlot` / `loadMemorySlot` 标 `@Deprecated`，实现保留；`PowerSupplyProvider.quickSwitch` = write HR19 → 600ms 等待 → readRawRegisters HR0..HR120 → `_data.copyWith` 全字段刷新）
