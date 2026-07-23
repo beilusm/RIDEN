@@ -169,7 +169,7 @@ static const _verboseLog = false; // set true for per-task debug logs
 - **Phase L1.2** — 版本来源 CI 校验 + metainfo 注入：APPLIED（双 workflow +env*.sh 校验 / Linux +metainfo sed 注入；见"版本来源管理"章节）
 - **P0 修复 + P1-3 修复 + Option B refactor**：APPLIED
 - **P1-1 (`_onPollMiss` 死代码)**：仍 OPEN
-- **P1-2 (zombie `_worker` 阻塞自动 reconnect)**：仍 OPEN
+- **P1-2 (zombie `_worker` 阻塞自动 reconnect)**：APPLIED（`ModbusWorkerHandle.isDead` getter + `_cleanup()` 同步 `_dead=true` + `SerialModbusService._handleWorkerError` 与 connect/disconnect/listPorts fast-path + `PowerSupplyProvider._onData` `CommStatus.error` 传播；`test/serial_worker_lifecycle_test.dart` 7 test PASS。`flutter analyze` 28/0 新增）
 - **Phase A — Register Schema 与 Worker 解码对齐**：APPLIED（HR3/HR7/HR15/HR16 新字段；auxVoltage/statusFlags `@Deprecated` 保留；quickSwitch 接口 + SerialImpl + Mock 实现）
 - **Phase A.5 — HR19 硬件快速切换验证**：APPLIED（真机 PASS — HR19 0→1 触发 HR8 4.20V→5.00V + HR9 6.100A→5.000A，与 M1 preset 一致；HR19 (0x0013) 是设备硬件 Memory Slot 切换入口）
 - **Phase B — UI 迁移到 quickSwitch**：APPLIED（UI 全部 loadSlot→quickSwitch；`loadSlot` / `loadMemorySlot` 标 `@Deprecated`，实现保留；`PowerSupplyProvider.quickSwitch` = write HR19 → 600ms 等待 → readRawRegisters HR0..HR120 → `_data.copyWith` 全字段刷新）

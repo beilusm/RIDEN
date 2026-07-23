@@ -285,4 +285,21 @@ class MockModbusService implements ModbusService {
       screenBrightness: 3,
     ));
   }
+
+  /// Test helper (P1-2): emit a single snapshot with
+  /// [CommStatus.error] into the data stream to verify that
+  /// [PowerSupplyProvider._onData] flips `_connected = false` and
+  /// upgrades its own `commStatus` to `error` when the service
+  /// signals a worker-level crash.
+  ///
+  /// Mirrors what [SerialModbusService._handleWorkerError] does on
+  /// a real [ModbusWorkerHandle] isolate crash — the mock has no
+  /// isolate to actually kill, so we synthesize the same error
+  /// snapshot instead.  Not invoked by any production path.
+  void simulateCrash() {
+    _controller.add(PowerSupplyData(
+      timestamp: DateTime.now(),
+      commStatus: CommStatus.error,
+    ));
+  }
 }

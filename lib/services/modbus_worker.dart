@@ -543,6 +543,17 @@ class ModbusWorkerHandle {
 
   ModbusWorkerHandle._(this._isolate, this._workerPort, this._uiPort);
 
+  /// True when the worker isolate has crashed or been force-killed.
+  ///
+  /// P1-2: [SerialModbusService.connect] checks this before every
+  /// reconnect attempt so a zombie handle (still referenced from
+  /// `_worker` but no longer backed by a live isolate) doesn't block
+  /// a fresh spawn, and [SerialModbusService.disconnect] uses it to
+  /// skip the slow `await shutdown().timeout(5s)` round-trip when
+  /// the worker has already died (otherwise we burn 5-10s waiting
+  /// for a reply that will never arrive).
+  bool get isDead => _dead;
+
   static Future<ModbusWorkerHandle> spawn() async {
     final uiPort = ReceivePort();
     final handshake = Completer<SendPort>();
@@ -631,6 +642,17 @@ class ModbusWorkerHandle {
   void _cleanup() {
     if (_cleaned) return;
     _cleaned = true;
+    // P1-2: a cleaned-up handle is no longer backed by a live
+    // isolate, so it MUST report `isDead == true` so the Serial
+    // side can short-circuit disconnect()'s slow shutdown round-
+    // trip AND skip spawning a duplicate worker alongside it.
+    // Before this fix, `_cleanup` only set `_cleaned` — `isDead`
+    // still queried `_dead` which was only set by `_onIsolateExit`
+    // and `forceKill`.  In the graceful `shutdown()` path the
+    // uiPort is closed BEFORE the Isolate.kill onExit message can
+    // arrive, so `_onIsolateExit` never ran and `isDead` returned
+    // false even though the handle was completely torn down.
+    _dead = true;
     try { _dataController?.close(); } catch (_) {}
     try { _uiPort.close(); } catch (_) {}
     try { _isolate.kill(priority: Isolate.immediate); } catch (_) {}

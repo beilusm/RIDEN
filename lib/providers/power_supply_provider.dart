@@ -149,6 +149,46 @@ class PowerSupplyProvider extends ChangeNotifier {
   // ── Internal data handler ──────────────────────────────────────
 
   void _onData(PowerSupplyData snapshot) {
+    // P1-2: Worker-crash propagation.  SerialModbusService's
+    // `_handleWorkerError` (wired into ModbusWorkerHandle.onError)
+    // emits a single final snapshot with commStatus = error after
+    // the worker isolate has died.  Treat that authoritative signal
+    // differently from a normal poll snapshot:
+    //   - flip `_connected = false` so the UI reconnect button lights
+    //     up (matches explicit disconnect() behaviour)
+    //   - do NOT reset `_lastPollOk` or `_consecutiveFails` — those
+    //     still serve the health-check timer that's about to fire and
+    //     escalate the timeout path
+    //   - do NOT append to `_chartData` (a crash isn't a measurement)
+    //
+    // Scope note: only `CommStatus.error` is treated as the crash
+    // signal.  `CommStatus.offline` is the worker's *default* poll
+    // snapshot value (it never explicitly sets commStatus on FAST /
+    // SLOW _replyData), and the existing merge path below already
+    // honour the "was offline → promote to online" upgrade.  Using
+    // both `offline` and `error` here would interpret every normal
+    // FAST poll as a crash — the original mock-tick behaviour ticked
+    // PowerSupplyData defaults to offline at every 250 ms interval.
+    //
+    // Explicit service-side `disconnect()` emits `CommStatus.offline`
+    // too, but `provider.disconnect()` cancels its `_sub` BEFORE
+    // calling `_service.disconnect()`, so that snapshot has no
+    // listener and never reaches this method.
+    if (snapshot.commStatus == CommStatus.error) {
+      final wasConnected = _connected;
+      if (wasConnected) {
+        _connected = false;
+        _connectedPort = null;
+        _healthTimer?.cancel();
+        _bgSlotTimer?.cancel();
+        _bgSlotTimer = null;
+        _data = _data.copyWith(commStatus: CommStatus.error);
+        notifyListeners();
+        _service.incNotify();
+      }
+      return;
+    }
+
     _lastPollOk = DateTime.now();
     _consecutiveFails = 0;
 

@@ -144,13 +144,16 @@ class _WorkerCrashedException implements Exception {
    - 不致 hang，但 UI 状态机退化：用户看到 timeout 而非 error。
    - 未修复。out of scope 当前会话。
 
-6. **Worker crash 后 zombie `_worker` 静默阻塞 `connect()`，需手动 disconnect→connect 恢复** — **OPEN (P1-2)**
-   - [Project Source] `serial_modbus_service.dart:30-32` `onError` 回调只 debugPrint。
-   - 没有 crash 后的自动清零 `_worker`，`if (_worker != null) return;` (service line 28) 拒绝新 connect。
-   - Provider 端 line 71 `if (_connected || _connecting) return;` 同样拒绝。
-   - 用户必须手动 DISCONNECT (然后 CONNECT) 或 RECONNECT 才能恢复。`reconnect()` 始终可恢复 (trace 验证)。
-   - 不致 hang (UI 显示 timeout；disco+co 即恢复)，但 UX 退化。
-   - 未修复。Patch 建议: 在 `onError` 回调中触发 `_worker = null` + `_connected = false` + `notifyListeners()` + 状态升级为 `CommStatus.error`。out of scope 当前会话。
+6. **Worker crash 后 zombie `_worker` 静默阻塞 `connect()`，需手动 disconnect→connect 恢复** — **RESOLVED (P1-2) — 本次会话已修复**
+   - [Project Source] `serial_modbus_service.dart:30` `onError` 改为 `_handleWorkerError`：identical 清零 `_worker` + 取消 `_sub`/`_statTimer` + `_dataController.add(CommStatus.error 快照)` 通知 Provider。
+   - `ModbusWorkerHandle.isDead` 公共 getter + `_cleanup()` 同步置 `_dead=true` 让 service 端能识别 zombie。
+   - `connect()` 新增 zombie 检查（清零后spawn）+ try/catch 包裹 spawn+worker.connect 失败路径（清零后 rethrow）。
+   - `disconnect()` fast-path：dead worker 跳过 `await w.disconnect().timeout(5s)` + `await w.shutdown().timeout(5s)` 两步可达 10s 的 reply 等待。
+   - `listPorts()` 把 zombie 当作 `_worker==null`，走 transient spawn 路径。
+   - `PowerSupplyProvider._onData` 检测 `CommStatus.error` 快照翻 `_connected=false` + 升级到 `error` + `notifyListeners()`（仅 `error`，不碰 `offline` —— 后者是 worker 默认 poll 值）。
+   - 测试: `test/serial_worker_lifecycle_test.dart` 7 test PASS；`flutter analyze` 28 issues / 0 新增。
+   - 真机 crash 路径 (`Isolate.kill` 外部触发 `_onIsolateExit`) 自动通过 onError 触发该机制；mock 没有故仅单测覆盖 state machine 层面。
+   - 修复前: 用户必须手动 DISCONNECT (然后 CONNECT) 或 RECONNECT 才能恢复；修复后: onError 自动清零 + Provider 自动升级为 `CommStatus.error`，UI 即时反馈，无需手动恢复。
 
 7. **`toggleRegView` fire-and-forget 时序** — **OPEN (P1)** UI 端状态可能与 worker 实际 timer 状态短时间内不一致。不致 hang。
 
@@ -192,7 +195,7 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
 - [x] 8. 重新评估 Production Ready 判定 (Step 8 verdict: Production Ready for P0 scope)
 - [x] 9. 应用 P1-3 修复 (`_cleanup()` 分离状态/资源幂等 + Option B refactor shutdown().then)
 - [ ] 10. (可选, P1-1) 修复 `_onPollMiss` 调用 — out of scope 当前会话
-- [ ] 11. (可选, P1-2) 修复 zombie `_worker` 阻塞自动 reconnect — out of scope 当前会话。建议方案: 在 service `onError` 回调中置 `_worker = null` 并通知 Provider 置 `_connected = false` + `notifyListeners()` + 升级 `CommStatus.error`。
+- [x] 11. (P1-2) 修复 zombie `_worker` 阻塞自动 reconnect — **已修复 (本次会话)**：service `onError` 改为 `_handleWorkerError`（identical 清零 `_worker` + cancel sub/statTimer + 发 `CommStatus.error` 快照）+ `ModbusWorkerHandle.isDead` getter + `connect()` zombie 检查 + connect-failed cleanup + `disconnect()` isDead fast-path + Provider `_onData` `CommStatus.error` 传播。详见 line 350+ "RESOLVED — P1-2" 章节。
 
 # Constraints
 
@@ -299,10 +302,10 @@ fvm dart analyze lib | rg -i deprecated
 - 修复：在 FAST/SLOW poll miss 路径接入 `_onPollMiss()` 调用 → `_consecutiveFails++` → 触发 error 状态机。
 - 验证：`fvm flutter analyze` + runtime log 检测 `CommStatus.error` 是否出现。
 
-### P1-2 zombie `_worker` 阻塞自动 reconnect (`serial_modbus_service.dart:30-32`)
+### P1-2 zombie `_worker` 阻塞自动 reconnect (`serial_modbus_service.dart:30-32`) — RESOLVED
 - worker crash 后 `onError` 回调只 debugPrint 不置 `_worker = null`，connect() 两级守卫拒绝。
-- 修复：在 `onError` 中 `if (identical(_worker, _currentWorkerHandle)) _worker = null`（借用 B.1 identical 模式）+ 触发 `_dataController.add(PowerSupplyData(commStatus: CommStatus.offline))` 通知 UI → Provider listener 置 `_connected = false` + `notifyListeners()` + 升级 `CommStatus.error`。
-- 验证：`fvm flutter analyze` + runtime 验证 crash → 自动 reconnect 路径。
+- 修复（已实施）：见上方 "RESOLVED — P1-2" 章节（line 350+）。
+- 验证：`fvm flutter analyze` 28/0 + `fvm flutter test` 25/25 PASS + `test/serial_worker_lifecycle_test.dart` 7 test 单独也 PASS。
 
 ## 延期长后续版本（v1.1+，见 Phase 3 "Not Implemented"）
 
@@ -347,9 +350,19 @@ fvm dart analyze lib | rg -i deprecated
 - 影响: `CommStatus.error` 永不达到，UI 健康检查仅升级到 `timeout`。UX 退化但不致 hang。
 - 修复建议: 在 FAST/SLOW poll miss 路径接入 `_onPollMiss()` 调用。
 
-### OPEN — P1-2: Zombie `_worker` 阻塞自动 reconnect (`serial_modbus_service.dart:30-32`)
+### RESOLVED — P1-2: Zombie `_worker` 阻塞自动 reconnect (`serial_modbus_service.dart:30-32`)
 - 影响: worker crash 后 `onError` 回调只 debugPrint，不置 `_worker = null`，不通知 Provider；connect() 在 service (line 28) 和 provider (line 71) 两级守卫均静默拒绝。用户必须手动 DISCONNECT + CONNECT 或 RECONNECT 才能恢复。
-- 修复建议: 在 `onError` 回调中清零 `_worker` + 通过 `dataController` 通知 Provider，Provider 置 `_connected = false` + `notifyListeners()` + 升级 `CommStatus.error`，UI 可以提示用户或自动触发 reconnect。
+- **修复实施 (本次会话)**:
+  1. `ModbusWorkerHandle` 新增 `bool get isDead => _dead;` 公共 getter (`modbus_worker.dart`)；`_cleanup()` 同步置 `_dead = true`（之前 `_cleanup` 仅置 `_cleaned`，`isDead` 在 `shutdown()` 路径不返回 true）。
+  2. `SerialModbusService` 新增 `_handleWorkerError(String)` 方法（替代原 `onError` 中只 debugPrint 的匿名 lambda）：identical-ptr 校验清空 `_worker` + 取消 `_sub` / `_statTimer` + 通过 `_dataController` 发送 `CommStatus.error` 快照。
+  3. `SerialModbusService.connect()` 增加 zombie 检查：if `_worker != null && _worker!.isDead` — 清理 + 取消 statTimer / sub 后再 spawn；同时把 spawn + 子端口连接包裹进 try/catch，连接失败时 `forceKill + null (_worker)` 并 rethrow（之前 port-open 失败会留下一个 spawn 但未连接的 zombie handle 阻塞后续 reconnect）。
+  4. `SerialModbusService.disconnect()` 增加 `isDead` fast-path：dead worker 不再 `await w.disconnect().timeout(5s)` + `await w.shutdown().timeout(5s)`（两步合计可达 10s，dead worker 不会 reply），直接 `forceKill` + null。
+  5. `SerialModbusService.listPorts()` 同步把 zombie 视为 `_worker == null` — 走 transient spawn 路径，避免对 dead handle 调 `listPorts()` hang。
+  6. `PowerSupplyProvider._onData` 增加 worker-crash 传播分支：snapshot.commStatus 为 `CommStatus.error` 时（仅由 service 的 `_handleWorkerError` 发出，**不是** `offline` — 后者是 worker 默认 poll 快照值，会被错误识别为 crash），翻转 `_connected = false` + 清理 `_bgSlotTimer` / `connectedPort` + 升级 `_data.commStatus = error` + `notifyListeners()`；不重置 `_lastPollOk` / `_consecutiveFails`；不 append chartData（crash 不是测量），`wasConnected=false` 时短路（idempotent 多次 crash）。
+- **测试**: `test/serial_worker_lifecycle_test.dart` 7 个 test 覆盖 ModbusWorkerHandle.isDead 三态（spawn / forceKill / shutdown）+ Provider crash 传播 + 幂等 + 正常快照不被误判。
+- **验证**: `flutter analyze` 28 issues / 0 新增；`flutter test` 25/25 PASS（含 18 旧 + 7 新）。
+- **CLAUDE.md 一致性**: 严格遵守禁令 — `ModbusScheduler` / FAST 150ms / SLOW 1000ms / `_accumulateRead` 250ms / register schema / quickSwitch 全部未改动；仅 `modbus_worker.dart` 添加 `isDead` getter 与 `_cleanup()` 一行 `_dead = true` 同步（P1 稳定性修复允许）。
+- **后续**: `onError` 路径仅在真机 / 真实进程 trigger isolate crash 时才触发；mock 没有 isolate 故单测仅覆盖 state machine 层面（`simulateCrash()` helper 直接注入 `CommStatus.error` 快照）。真机 crash 回归可在断电 / 拔 USB 场景手动验证 UI 是否升级到 `CommStatus.error` 且 Reconnect 按钮亮起。
 
 ### Pre-existing — P2
 - `SerialModbusService._dataController` 永不 close (设计如此, long-lived broadcast)。
@@ -907,7 +920,7 @@ sed -i -E 's|<release version="[^"]*" date="[^"]*">|<release version="1.0.0-l12-
 | README 4 处 `1.0.0` 文档示例 | doc | OPEN — 非 release 阻塞 | 后续 doc 版本示例 cleanup |
 | `packaging/scripts/build_release.sh` 3 处注释引用 `1.0.0` | 注释 | OPEN — 不动本地脚本 | Phase L1.2 明确排除；将来可改注释为 `${APP_VERSION}` |
 | P1-1 `_onPollMiss` 死代码 | `power_supply_provider.dart:184` | OPEN | 业务代码修复（与 release 无关） |
-| P1-2 zombie `_worker` 阻塞 reconnect | `serial_modbus_service.dart:30-32` | OPEN | 业务代码修复（与 release 无关） |
+| P1-2 zombie `_worker` 阻塞 reconnect | `serial_modbus_service.dart:30-32` | **RESOLVED (本次会话)** | 已修复：`_handleWorkerError` + identical 清零 + `isDead` getter + connect/disconnect fast-path + Provider `_onData` `CommStatus.error` 传播 |
 | AppStream `url-not-reachable` warning | metainfo validate | OPEN — `--no-net` 模式 | repo 已上线 + URL 已更新；有 net 环境重跑 `appstreamcli validate` 验证可消除 |
 
 ### 发布冻结声明
