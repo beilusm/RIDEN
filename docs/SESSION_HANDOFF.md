@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.1 已正式 Release (FROZEN)，Phase A/A.5/B 寄存器表对齐 + HR19 quickSwitch 迁移已固化在 commit `b4d7f09`。下一阶段候选：Phase B.5 残留 audit / Phase C UI 展示 / quickSwitch 延迟优化**。
+RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.1 已正式 Release (FROZEN)，Phase A/A.5/B/B.1/B.2 寄存器表对齐 + HR19 quickSwitch 迁移 + active OVP/OCP 同步修复已固化。下一阶段候选：Phase B.5 残留 audit / Phase C UI 展示 / quickSwitch 延迟优化**。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -196,6 +196,7 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
 - [x] 9. 应用 P1-3 修复 (`_cleanup()` 分离状态/资源幂等 + Option B refactor shutdown().then)
 - [ ] 10. (可选, P1-1) 修复 `_onPollMiss` 调用 — out of scope 当前会话
 - [x] 11. (P1-2) 修复 zombie `_worker` 阻塞自动 reconnect — **已修复 (本次会话)**：service `onError` 改为 `_handleWorkerError`（identical 清零 `_worker` + cancel sub/statTimer + 发 `CommStatus.error` 快照）+ `ModbusWorkerHandle.isDead` getter + `connect()` zombie 检查 + connect-failed cleanup + `disconnect()` isDead fast-path + Provider `_onData` `CommStatus.error` 传播。详见 line 350+ "RESOLVED — P1-2" 章节。
+- [x] 12. (Phase B.2) 修复 active OVP/OCP 被 FAST poll M0 storage 覆盖 — **已修复 (本次会话)**：service `_sub.listen` 不让 `snapshot.ovp/ocp` 覆盖 `_current` + `_parseAllRegs` 删除 `r(82)/r(83)` 赋值 + provider `_onData` merged 守卫 + SLOW poll SLOT-sync 把 active slot storage 升到 `_data.ovp/ocp`。register_conflicts & register_definition doc 对齐。详见 line 400+ "RESOLVED — Phase B.2" 章节。
 
 # Constraints
 
@@ -205,23 +206,25 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
 
 # Recommended Starting Point (Next Session)
 
-## 当前架构状态（截至 b4d7f09）
+## 当前架构状态（截至 Phase B.2 + register_definition 数据 + docs）
 
 | 项 | 值 |
 |---|---|
 | 仓库 | `https://github.com/beilusm/RIDEN`（公开，已上线） |
-| HEAD | `b4d7f09 Complete register schema alignment and migrate memory slots to quickSwitch` |
+| HEAD (pushed) | `fd428f6 Fix active OVP/OCP synchronization after quickSwitch` |
+| HEAD (local, 待 commit) | Phase B.2 register_definition conflict=false + inputVoltageAlt 路径删除 + docs sync |
 | Tags | `v1.0.0` (Windows-only 历史) / `v1.0.1` (Latest, FROZEN, 4 assets) |
 | 版本来源 5 处 | S1 pubspec `1.0.1+1` ✓ / S2 env.sh `1.0.1` ✓ / S3 env_windows.sh `1.0.1` ✓ / S4 Runner.rc `"1.0.0"` 接受不校验 / S5 metainfo CI 注入 ✓ |
 | 通信架构 | ModbusScheduler + polling 间隔 (FAST 150ms / SLOW 1000ms / `_accumulateRead` 250ms) 全部冻结 |
-| 寄存器表 | `RegisterDefinition` HR0..HR19 已对齐 datasheet，地址格式 `0xXXXX` |
-| 切换入口 | HR19 quickSwitch 已硬件验证为 Memory Slot 唯一真实切换入口；UI 全部走 `quickSwitch()`，旧 `loadSlot` / `loadMemorySlot` 标 `@Deprecated` 保留 |
-| `flutter analyze` | 28 issues，0 新增 |
-| `flutter test` | 12/12 PASS |
+| 寄存器表 | `RegisterDefinition` HR0..HR19 已对齐 datasheet，地址格式 `0xXXXX`；HR14/HR82/HR83 `conflict: false`（Phase B.2 清除） |
+| 切换入口 | HR19 quickSwitch 已硬件验证为 Memory Slot 唯一真实切换入口；UI 全部走 `quickSwitch()`，旧 `loadSlot` / `loadMemorySlot` 标 `@Deprecated` 保留；active OVP/OCP = `HR[80 + activeSlot*4 + 2/3]`（Phase B.2 datasheet 确认） |
+| `flutter analyze` | 21 issues，0 新增（28 baseline 减去 Phase B.2 修掉的 7 个 register_definition const 警告） |
+| `flutter test` | 24/24 PASS |
 
-## Phase B.1 — quickSwitch 稳定性优化（**未 commit, 待真机回归**）
 
-代码完成（4 lib + 2 test 文件 untracked / unstaged）：
+## Phase B.1 — quickSwitch 稳定性优化（**已 commit `e955627` + 真机回归 PASS**）
+
+代码完成（已固化）：
 
 - **Task 1** — `PowerSupplyProvider.quickSwitch` 中 OVP/OCP 源从 `raw[82]/raw[83]`（M0 存储）改为 `raw[80+slot*4+2/3]`（当前 active slot 存储）。`copyWith` 路径已经过用户澄清：每个 Mx 有自己的 OVP/OCP，存储在 `HR[80+slot*4+2/3]`, HR82/HR83 仅指 M0 自己的存储。
 - **Task 2** — `[QSW] before/after` 调试日志打印 HR19/HR8/HR9 + 当前 slot 的 OVP/OCP；新增 `_reg(regs, addr)` 边界安全 helper。
@@ -231,15 +234,21 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
   - `_startBgSlotRefresh()` 改为直接调 `refreshAllSlots()`；删除孤立字段 `_bgSlotIndex`
   - Mock `readRawRegisters` 不再单独填充 regs[82/83]（slot loop 已包含 M0 storage 覆盖）
 
-验证状态（通过）：
+验证状态（**已通过**）：
 
 - `fvm flutter test test/phaseb1_stability_test.dart` — 5/5 PASS（含 `quickSwitch refreshes ovp/ocp` 断言 `ovp=13.0` `ocp=4.0` 来自 M1 存储 HR86/87）
 - `fvm flutter test test/phaseb1_hw_regression.dart`（smoke 部分）— PASS（plumbing OK, HR19 ack ×4, M0 STABLE）
-- `fvm flutter analyze` — 28 issues / **0 新增**
+- **真机回归 (PHASEB1_HW=1)** — Verdict: **PASS**
+  - HR19 ack (×4): PASS
+  - HR8/HR9 forward load (M0→M1, M0→M2): PASS
+  - HR8/HR9 reverse (M1→M0, M2→M0): RECORDED (firmware design — HR19=0 = no-op reload)
+  - Per-slot OVP/OCP DISTINGUISHED: PASS (M1OVP=6V vs HR82=17V, M2OVP=62V vs HR82=17V)
+  - HR82/HR83: INVARIANT (M0 stored)
+- `fvm flutter analyze` — 28 issues / **0 新增**（修复时基线）；Phase B.2 后 baseline 降至 21
 
-**待办**: 真机回归（`PHASEB1_HW=1 fvm flutter test test/phaseb1_hw_regression.dart --name hardware -r expanded`）验证新 per-slot OVP/OCP 地址在真机读出 M1=13V/4A, M2=20V/0.5A，再 commit。
+**后续 followup**: 真机发现 Phase B.1 Task 1 只修了 quickSwitch 路径，FAST poll 仍把 HR82/83 注入 snapshot 并通过 service _sub.listen 覆盖 _current.ovp/ocp — 这个 bug 由 Phase B.2 修复（详见 line 400+ RESOLVED — Phase B.2 章节）。
 
-### 已知设备行为 — Phase B.1 真机首次发现（用户决策：暂不处理，仅记录）
+### 已知设备行为 — Phase B.1 真机首次发现（用户决策：已实施 UI 隐藏）
 
 **HR19=0 不会 reload M0 preset**：
 
@@ -254,13 +263,13 @@ P0 修复 + P1-3 修复 + Option B refactor 全部 APPLIED。
 - OVP/OCP 由 provider 从 active slot 存储地址读出（Phase B.1 Task 1 修正后），M0 active 时 ovp = HR82/83 = M0 自己的 OVP，表现上无错位。
 - 仅 Vset/Iset 有此 "reverse no-reload" 偏差。在用户使用流程中：从 M0 出发切到 Mx → 再切回 M0 = M0 的上次工作值（与 M0 已存 preset 可能不一致）。
 
-**当前决策（用户）**：暂不处理。原因：
-1. UI 默认在 M0；用户切换轨迹是 M0 → M1..M9，从不主动 "切回 M0"。
-2. 真要回到 M0 preset 时，用户可以走 `loadMemorySlot(0)` legacy 路径（软件模拟：读 M0 存储 + 4 次写工作寄存器）— 但该路径已被标 `@Deprecated`，且需求不强。
-3. 强行在 UI 端写四次工作寄存器会引入额外的写入冲突 / 与 FAST poll 旧值 merge 风险，得不偿失。
+**当前决策（用户，已实施）**：M0 = 上电默认数据组，不可通过修改 0x13 寄存器生效。
+1. UI 不允许用户主动切回 M0：preset 选择 dialog（`BottomStatus._showPresetDialog` / `SetpointPanel._showPresets`）只显示 M1..M9，不显示 M0 选项。
+2. 设备上电时 activeSlot=0（M0）仍是 provider 的初始 state；UI Preset 按钮仍能显示 `M0` 当前 preset 值。
+3. 用户主动切到 M1..M9 后不再能从 UI 切回 M0；若用户物理重上电，设备恢复 HR19=0 + M0 preset，UI 在下次 connect 时通过 `readAllMemorySlots()` / `_activeSlot` 同步会感知到 active=0。
 
-**后续候选**：
-- Phase C 或 v1.1+ 范围内，若 UI 添加 "回到 M0 preset" 显式按钮，再考虑走 legacy `loadMemorySlot(0)` 路径或新增一个 `quickSwitch(0)` + softload(0) 复合路径。
+**后续候选（未启动）**：
+- 若将来 UI 添加 "回到 M0 preset" 显式按钮，可考虑走 legacy `loadMemorySlot(0)` 路径或新增一个 `quickSwitch(0)` + softload(0) 复合路径。
 - 现在不实现，**禁止 UI 主动调 `loadMemorySlot(0)`**（违反 @Deprecated 语义）。
 
 ## 下一阶段候选入口（按优先级，未启动）
@@ -363,6 +372,28 @@ fvm dart analyze lib | rg -i deprecated
 - **验证**: `flutter analyze` 28 issues / 0 新增；`flutter test` 25/25 PASS（含 18 旧 + 7 新）。
 - **CLAUDE.md 一致性**: 严格遵守禁令 — `ModbusScheduler` / FAST 150ms / SLOW 1000ms / `_accumulateRead` 250ms / register schema / quickSwitch 全部未改动；仅 `modbus_worker.dart` 添加 `isDead` getter 与 `_cleanup()` 一行 `_dead = true` 同步（P1 稳定性修复允许）。
 - **后续**: `onError` 路径仅在真机 / 真实进程 trigger isolate crash 时才触发；mock 没有 isolate 故单测仅覆盖 state machine 层面（`simulateCrash()` helper 直接注入 `CommStatus.error` 快照）。真机 crash 回归可在断电 / 拔 USB 场景手动验证 UI 是否升级到 `CommStatus.error` 且 Reconnect 按钮亮起。
+
+### RESOLVED — Phase B.2: Active OVP/OCP 被 FAST poll M0 storage 覆盖 (`serial_modbus_service.dart` / `power_supply_provider.dart`) — RESOLVED
+- **症状**: `quickSwitch(1)` 切到 M1 后，UI 的 OVP/OCP 闪现 M1 正确值 ≤150ms 就回退到 M0 stored，并保持不变。
+- **根因**: Modbus worker FAST poll 硬读 HR5..83 → `snap.ovp/ocp` = HR82/HR83（M0 storage，与 active slot 无关）。service `_sub.listen` 中 `isFast ? snap.ovp : _cur.ovp` 让 FAST 每周期把 M0 storage 覆盖进 `_current.ovp/ocp`，provider `_onData` 透传 → `_data` 回退。quickSwitch fullPoll 写入的正确 active slot 值活不过一个 FAST 周期。
+- **datasheet clarification (Phase B.2)**: HR82/HR83 永远是 M0 Memory Slot OVP/OCP storage；active OVP/OCP 由 HR19 当前 slot 决定，地址 = `HR[80 + activeSlot*4 + 2/3]`（M0=82/83, M1=86/87, M2=90/91, …）。设备无独立"顶层 OVP/OCP"寄存器。
+- **修复 (三层守卫 + 一次同步)**:
+  1. `SerialModbusService._sub.listen` (serial_modbus_service.dart:90-91)：`ovp/ocp` 不再让 `snapshot.ovp/ocp` 覆盖 `_current`，改为 `ovp: _current.ovp, ocp: _current.ocp`。worker FAST snap 的 HR82/83 字段从此被丢弃。
+  2. `SerialModbusService._parseAllRegs` (serial_modbus_service.dart:422-430)：删除 `ovp: r(82)/100.0, ocp: r(83)/1000.0` 赋值。service 不知 active slot，无权发 active 保护值；readAllRegisters 返回时 ovp/ocp 走 PowerSupplyData default。
+  3. `PowerSupplyProvider._onData` merged.copyWith (power_supply_provider.dart:200-209)：`ovp: _data.ovp, ocp: _data.ocp` — 双保险，防 service 默认值被透传污染 _data。
+  4. `PowerSupplyProvider._onData` SLOT-sync (power_supply_provider.dart:226-242)：snapshot.memorySlots 非空时，找到 `s.index == _activeSlot` 把 `s.ovp/ocp` 升到 `_data`，SLOW poll 每 ~5s 一个完整 slot 循环刷新一次。
+- **Phase B.2 docs + register_definition 数据 (本次会话末追加)**:
+  - commit `b1f3ad3` (已 push): register_conflicts.dart 4 条 conflict resolution — address 14 / 82 / 83 / 2 标 [RESOLVED] + resolution 字段写 datasheet clarification 详情；issue/codePaths 历史保留。
+  - commit `fd428f6` (已 push): 上述三层守卫 + SLOT-sync 代码修复。
+  - 本地未 commit: register_definition.dart HR14/HR82/HR83 `conflict: false`（RegisterPage 感叹号 0x0E/0x52/0x53 消失）+ HR82/HR83 `name: 'M0 OVP'/'M0 OCP'` 与 M1..M9 _slotDef 命名一致 + HR14 description 改"输入电压（读取值 ÷ 100 = 实际电压 V）"；`serial_modbus_service.dart` `_parseAllRegs` 删除 `inputVoltageAlt: r(14) / 10.0`；`mock_modbus_service.dart` 删除 `inputVoltageAlt: _vIn`；7 个 register_definition prefer_const_constructors warnings 顺手修掉（const 加到 5 个 RegisterDefinition 调用）。
+- **测试**: `fvm flutter test` 24/24 PASS（含原 18 + 7 P1-2 worker lifecycle + Phase B/B.1 快照覆盖，mock 中 inputVoltageAlt = 0 不影响任何断言）。未新增 Phase B.2 单测（mock 无 active slot 概念，运行时多层守卫只能在真机或更复杂的 fake service 中验证）；真机回归建议手动验证 quickSwitch(0/1/2) 各 5s 后 UI 仍稳定。
+- **验证**: `fvm flutter analyze` 21 issues / 0 新增（28 baseline 减去 7 个 register_definition prefer_const_constructors 修掉）。
+- **CLAUDE.md 一致性**: 严格遵守禁令 — `ModbusScheduler` / FAST 150ms / SLOW 1000ms / `_accumulateRead` 250ms / quickSwitch 逻辑 / setOCP/setOVP 写入路径全部未改动；`register_conflicts.dart` 仅改文档字段（resolution + title），未删 issue/codePaths；`register_definition.dart` 仅改 `name` / `description` / `conflict` bool / const 关键字，未改 `address` / `access` / `scale` / `dashboardField` 等结构字段。
+- **未做 (后续候选)**:
+  - write 路径 reroute: `setOVP(v)` 仍 `writeRegister(82, ...)` — active≠0 时改不到 active slot OCP。需要 datasheet 写入语义硬件验证（Phase B.3 候选）。
+  - PowerSupplyData.inputVoltageAlt 字段标 `@Deprecated` 并删除：当前保留为 default 0，无任何代码路径赋值，但字段本身仍在 copyWith / dartdoc 中。
+  - quickSwitch(0) 不 reload M0 preset — 设备固件设计使然，UI 语义待决策（见 Phase B.1 已知设备行为章节）。
+
 
 ### Pre-existing — P2
 - `SerialModbusService._dataController` 永不 close (设计如此, long-lived broadcast)。
@@ -921,6 +952,7 @@ sed -i -E 's|<release version="[^"]*" date="[^"]*">|<release version="1.0.0-l12-
 | `packaging/scripts/build_release.sh` 3 处注释引用 `1.0.0` | 注释 | OPEN — 不动本地脚本 | Phase L1.2 明确排除；将来可改注释为 `${APP_VERSION}` |
 | P1-1 `_onPollMiss` 死代码 | `power_supply_provider.dart:184` | OPEN | 业务代码修复（与 release 无关） |
 | P1-2 zombie `_worker` 阻塞 reconnect | `serial_modbus_service.dart:30-32` | **RESOLVED (本次会话)** | 已修复：`_handleWorkerError` + identical 清零 + `isDead` getter + connect/disconnect fast-path + Provider `_onData` `CommStatus.error` 传播 |
+| Phase B.2 active OVP/OCP 被 FAST poll M0 storage 覆盖 | `serial_modbus_service.dart:90-91` / `power_supply_provider.dart:208` | **RESOLVED (本次会话)** | 已修复：service `_sub.listen` 守卫 + `_parseAllRegs` 不填 ovp/ocp + provider merged 守卫 + SLOW poll SLOT-sync；register_conflicts & register_definition doc 对齐，conflict=false (HR14/HR82/HR83) |
 | AppStream `url-not-reachable` warning | metainfo validate | OPEN — `--no-net` 模式 | repo 已上线 + URL 已更新；有 net 环境重跑 `appstreamcli validate` 验证可消除 |
 
 ### 发布冻结声明

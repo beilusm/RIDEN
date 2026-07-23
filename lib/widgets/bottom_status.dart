@@ -112,8 +112,9 @@ class BottomStatus extends StatelessWidget {
                 ),
               ),
               const Divider(color: AppTheme.borderSubtle),
-              // Slot rows
-              for (int i = 0; i < 10; i++) _slotRow(ctx, i),
+              // Slot rows — M0 = 上电默认数据组，不可通过修改 0x13 切回，
+              // 故只显示 M1..M9。
+              for (int i = 1; i < 10; i++) _slotRow(ctx, i),
             ],
           ),
         ),

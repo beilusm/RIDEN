@@ -410,7 +410,11 @@ class SerialModbusService implements ModbusService {
         setCurrent: r(9) / 1000.0,
         outputVoltage: r(10) / 100.0,
         outputCurrent: r(11) / 1000.0,
-        inputVoltageAlt: r(14) / 10.0,
+        // Phase B.2 — inputVoltageAlt /10 path removed.  PowerSupplyData
+        // still keeps the field as a deprecated compatibility slot
+        // (default 0) so copyWith / serialization paths don't break;
+        // no code path populates it any more.  See register_conflicts
+        // .dart address 14 [RESOLVED].
         // HR[15] = Key Lock enum {0=未锁定, 1=键盘锁定}.
         keyLock: r(15),
         // HR[16] = Protection Status enum {0=正常, 1=OVP, 2=OCP, 3=OTP}.

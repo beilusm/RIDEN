@@ -56,7 +56,9 @@ FAST poll 和 SLOW poll 都发送 `PowerSupplyData` 到 UI。
 - SLOW 只含 slot 数据 → 仅合并 `memorySlots`
 
 ### HR19 quickSwitch 是 Memory Slot 唯一真实切换入口（Phase A.5 硬件验证）
-设备固件用 HR19 (0x0013) 作为硬件 Memory Slot quick switch 入口：写 HR19=Mx 后设备固件自动加载对应 Mx 保存参数到当前工作寄存器（HR8 Vset / HR9 Iset / HR82 OVP / HR83 OCP）。Phase A.5 真机实测：HR19 0→1 触发 HR8 4.20V→5.00V + HR9 6.100A→5.000A，与 M1 preset 一致。
+设备固件用 HR19 (0x0013) 作为硬件 Memory Slot quick switch 入口：写 HR19=Mx 后设备固件自动加载对应 Mx 保存参数到当前工作寄存器（HR8 Vset / HR9 Iset）。Phase A.5 真机实测：HR19 0→1 触发 HR8 4.20V→5.00V + HR9 6.100A→5.000A，与 M1 preset 一致。Active OVP/OCP 由当前 slot 决定（地址 = `HR[80 + activeSlot*4 + 2/3]`，M0=82/83, M1=86/87, M2=90/91, …）；**HR82/HR83 永远是 M0 slot storage，不是顶层 active OVP/OCP**（Phase B.2 datasheet 确认，详见 `register_conflicts.dart` address 82/83 [RESOLVED]）。
+
+**M0 = 上电默认数据组，不可通过修改 0x13 寄存器生效**（Phase B.1 真机回归确认 + 用户决策）：设备上电时 HR19=0，工作寄存器使用 M0 preset。但写 HR19=0 不触发设备 reload M0 preset 到 HR8/HR9 — HR19=0 被设备理解为"无新选择 / 停留"。因此 UI 必须不允许用户主动切回 M0；preset 选择 dialog 只显示 M1..M9，不显示 M0 选项。设备 HR8/HR9 在切到 Mx 再"回 M0"后保持切换前的最后值，并非 M0 preset。
 
 旧 `loadMemorySlot()` 路径是软件模拟（读保存区 + 4 次写工作寄存器），现在标 `@Deprecated` 但实现保留。**UI 必须走 `quickSwitch()`**：write HR19 → 600ms 等待 → readRawRegisters HR0..HR120 → UI 用设备真实状态。
 
@@ -169,7 +171,9 @@ static const _verboseLog = false; // set true for per-task debug logs
 - **Phase L1.2** — 版本来源 CI 校验 + metainfo 注入：APPLIED（双 workflow +env*.sh 校验 / Linux +metainfo sed 注入；见"版本来源管理"章节）
 - **P0 修复 + P1-3 修复 + Option B refactor**：APPLIED
 - **P1-1 (`_onPollMiss` 死代码)**：仍 OPEN
-- **P1-2 (zombie `_worker` 阻塞自动 reconnect)**：APPLIED（`ModbusWorkerHandle.isDead` getter + `_cleanup()` 同步 `_dead=true` + `SerialModbusService._handleWorkerError` 与 connect/disconnect/listPorts fast-path + `PowerSupplyProvider._onData` `CommStatus.error` 传播；`test/serial_worker_lifecycle_test.dart` 7 test PASS。`flutter analyze` 28/0 新增）
+- **P1-2 (zombie `_worker` 阻塞自动 reconnect)**：APPLIED（`ModbusWorkerHandle.isDead` getter + `_cleanup()` 同步 `_dead=true` + `SerialModbusService._handleWorkerError` 与 connect/disconnect/listPorts fast-path + `PowerSupplyProvider._onData` `CommStatus.error` 传播；`test/serial_worker_lifecycle_test.dart` 7 test PASS）
 - **Phase A — Register Schema 与 Worker 解码对齐**：APPLIED（HR3/HR7/HR15/HR16 新字段；auxVoltage/statusFlags `@Deprecated` 保留；quickSwitch 接口 + SerialImpl + Mock 实现）
 - **Phase A.5 — HR19 硬件快速切换验证**：APPLIED（真机 PASS — HR19 0→1 触发 HR8 4.20V→5.00V + HR9 6.100A→5.000A，与 M1 preset 一致；HR19 (0x0013) 是设备硬件 Memory Slot 切换入口）
 - **Phase B — UI 迁移到 quickSwitch**：APPLIED（UI 全部 loadSlot→quickSwitch；`loadSlot` / `loadMemorySlot` 标 `@Deprecated`，实现保留；`PowerSupplyProvider.quickSwitch` = write HR19 → 600ms 等待 → readRawRegisters HR0..HR120 → `_data.copyWith` 全字段刷新）
+- **Phase B.1 — quickSwitch 稳定性优化**：APPLIED（quickSwitch copyWith 中 ovp/ocp 源从 `raw[82]/raw[83]` 改为 `raw[80+slot*4+2/3]`；`[QSW] before/after` debug 日志；`readAllMemorySlots()` 单次 bulk read 代替 10 次 `readMemorySlot(i)` 循环）
+- **Phase B.2 — Active OVP/OCP 数据同步修复**：APPLIED（修复 FAST poll 读 HR82/HR83 覆盖 active 值导致 quickSwitch 后 UI 闪回 M0 的 bug。三层守卫：service `_sub.listen` 不让 `snapshot.ovp/ocp` 覆盖 `_current`；service `_parseAllRegs` 不再填 ovp/ocp；provider `_onData` merged 守卫 + SLOW poll SLOT-sync 把 active slot storage 升到 `_data.ovp/ocp`。`register_conflicts.dart` HR14/HR82/HR83/HR2 标 [RESOLVED]；`register_definition.dart` HR14/HR82/HR83 `conflict: false`（RegisterPage 感叹号 0x0E/0x52/0x53 消失）；`_parseAllRegs` + Mock `inputVoltageAlt` /10 路径删除。`flutter analyze` 28→21 issues / 0 新增；`flutter test` 24/24 PASS）

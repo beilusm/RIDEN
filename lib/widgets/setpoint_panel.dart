@@ -105,18 +105,22 @@ class SetpointPanel extends StatelessWidget {
           child: Consumer<PowerSupplyProvider>(
             builder: (_, p, __) => ListView.builder(
               shrinkWrap: true,
-              itemCount: 10,
-              itemBuilder: (_, i) => ListTile(
-                dense: true,
-                visualDensity: VisualDensity.compact,
-                title: Text('M$i', style: AppTheme.digitalValue.copyWith(fontSize: 13,
-                    color: i == p.activeSlot ? AppTheme.setpointYellow : AppTheme.textSecondary)),
-                subtitle: Text(
-                  p.slotValues(i)?.map((v) => v.toStringAsFixed(2)).join(' / ') ?? '--',
-                  style: AppTheme.bodyMono.copyWith(fontSize: 10),
-                ),
-                onTap: () { p.quickSwitch(i); Navigator.pop(c); },
-              ),
+              // M0 = 上电默认数据组，不可通过修改 0x13 切回；只展示 M1..M9。
+              itemCount: 9,
+              itemBuilder: (_, idx) {
+                final i = idx + 1;
+                return ListTile(
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  title: Text('M$i', style: AppTheme.digitalValue.copyWith(fontSize: 13,
+                      color: i == p.activeSlot ? AppTheme.setpointYellow : AppTheme.textSecondary)),
+                  subtitle: Text(
+                    p.slotValues(i)?.map((v) => v.toStringAsFixed(2)).join(' / ') ?? '--',
+                    style: AppTheme.bodyMono.copyWith(fontSize: 10),
+                  ),
+                  onTap: () { p.quickSwitch(i); Navigator.pop(c); },
+                );
+              },
             ),
           ),
         ),

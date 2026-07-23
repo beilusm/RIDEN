@@ -270,7 +270,7 @@ class MockModbusService implements ModbusService {
       temperature: _temperature,
       outputVoltage: _vOut,
       outputCurrent: _iOut,
-      inputVoltageAlt: _vIn,
+      // Phase B.2 — inputVoltageAlt /10 path removed (service parity).
       keyLock: _keyLock,
       protectionStatus: _protectionStatus,
       isConstantCurrent: _ccMode,
