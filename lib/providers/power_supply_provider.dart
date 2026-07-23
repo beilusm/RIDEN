@@ -197,6 +197,16 @@ class PowerSupplyProvider extends ChangeNotifier {
       commStatus: _data.commStatus == CommStatus.offline
           ? CommStatus.online
           : _data.commStatus,
+      // Phase B.2 — never let snapshot.ovp/ocp overwrite _data's
+      // active-slot protection.  Service's _current.ovp/ocp are now
+      // frozen at PowerSupplyData defaults (see _sub.listen guard); a
+      // raw merge would drag those defaults into _data and clobber the
+      // value previously written by quickSwitch() or the SLOT-sync
+      // branch below.  Preserve _data's current ovp/ocp across the
+      // merge; the SLOT-sync block updates them from the active slot's
+      // storage when SLOW poll brings fresh values.
+      ovp: _data.ovp,
+      ocp: _data.ocp,
     );
 
     _data = merged;
@@ -212,6 +222,26 @@ class PowerSupplyProvider extends ChangeNotifier {
       _slotsLoaded = true;
       _bgSlotTimer?.cancel();
       _bgSlotTimer = null;
+
+      // Phase B.2 — sync the active slot's stored OVP/OCP into _data.
+      // Each M0..M9 slot's protection values live at HR[80+slot*4+2/3]
+      // (M0=82/83, M1=86/87, M2=90/91, …).  The active slot is HR[19].
+      // The SLOW poll cycle fills snapshot.memorySlots (cumulatively
+      // re-emitted by service via _mergeSlots) with the latest
+      // device-side read of these per-slot storage values.  Find the
+      // matching index and promote its ovp/ocp to _data, so the
+      // Settings → PROTECTION panel renders the *active* slot's
+      // protection (not M0's storage, which only coincides with the
+      // active protection when activeSlot == 0).  quickSwitch() also
+      // writes _data.ovp/ocp from the same formula; this branch keeps
+      // them in sync when the user changes protections from the
+      // device's front-panel without a quickSwitch round-trip.
+      for (final s in snapshot.memorySlots) {
+        if (s.index == _activeSlot) {
+          _data = _data.copyWith(ovp: s.ovp, ocp: s.ocp);
+          break;
+        }
+      }
     }
 
     _updateCommStatus(CommStatus.online);

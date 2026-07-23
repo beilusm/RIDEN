@@ -87,8 +87,17 @@ class SerialModbusService implements ModbusService {
           outputEnabled: isFast ? snapshot.outputEnabled : _current.outputEnabled,
           capacityMah: isFast ? snapshot.capacityMah : _current.capacityMah,
           energyMwh: isFast ? snapshot.energyMwh : _current.energyMwh,
-          ovp: isFast ? snapshot.ovp : _current.ovp,
-          ocp: isFast ? snapshot.ocp : _current.ocp,
+          // Phase B.2 — FAST poll reads HR[82]/HR[83] (M0 slot storage),
+          // not the active slot's OVP/OCP.  The worker isolate has no
+          // knowledge of HR[19], so when activeSlot != 0 the FAST
+          // snapshot's ovp/ocp fields are M0 storage and must NOT
+          // overwrite _current.  Service retains _current.ovp/ocp;
+          // the provider is responsible for keeping it in sync with
+          // the active slot's storage (HR[80+activeSlot*4+2/3]) via
+          // quickSwitch() refresh and the SLOW-poll slot-sync branch
+          // in _onData.
+          ovp: _current.ovp,
+          ocp: _current.ocp,
           memorySlots: snapshot.memorySlots.isNotEmpty
               ? _mergeSlots(_current.memorySlots, snapshot.memorySlots)
               : _current.memorySlots,
@@ -410,8 +419,14 @@ class SerialModbusService implements ModbusService {
         outputEnabled: r(18) == 1,
         capacityMah: r(39),
         energyMwh: r(41),
-        ovp: r(82) / 100.0,
-        ocp: r(83) / 1000.0,
+        // Phase B.2 — _parseAllRegs does NOT populate ovp/ocp.  HR[82]
+        // and HR[83] are M0 slot storage, not the active protection
+        // values; the active slot is selected by HR[19] which lives in
+        // the provider, and service has no access to it.  Leaving
+        // ovp/ocp unset lets PowerSupplyData defaults apply.  Callers
+        // needing the active slot's OVP/OCP must use readRawRegisters()
+        // and decode HR[80 + activeSlot * 4 + 2/3] themselves — see
+        // PowerSupplyProvider.quickSwitch / _onData SLOT-sync branch.
         memorySlots: slots,
         screenBrightness: r(72));
   }
