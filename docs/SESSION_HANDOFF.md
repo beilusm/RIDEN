@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.1 已正式 Release (FROZEN)，Phase A/A.5/B/B.1/B.2 寄存器表对齐 + HR19 quickSwitch 迁移 + active OVP/OCP 同步修复已固化。下一阶段候选：Phase B.5 残留 audit / Phase C UI 展示 / quickSwitch 延迟优化**。
+RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.3 已正式 Release，Phase D USB watcher + flag-based disconnect 固化；Phase E Measurement Recording 数据记录 (event-driven record + 用户选择 Save 位置 + UI + 39 测试) APPLIED 未提交 — 用户最终修订录制策略：每次波形刷新写一行 (event-driven) + START 按键弹原生 Save File dialog 由用户选位置 (`file_picker: ^8.1.0`)。下一阶段候选：Phase E git commit + v1.0.4 release / Phase B.5 残留 audit / quickSwitch 延迟优化**。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -1178,4 +1178,207 @@ quickSwitch()
 - `FAST 150ms` / `SLOW 1000ms` / `_accumulateRead 250ms` 三个数值
 - RegisterPage 布局 / 风格 / 交互逻辑
 - Dashboard / 业务功能 UI 大改（Phase C 范围）
+
+## Phase E — Measurement Recording 数据记录（**APPLIED，未 commit**）
+
+### 触发
+
+用户在 Post-Release 维护期提出新功能需求：数据记录 (measurement recording)。
+**Override CLAUDE.md "不新增业务功能" 禁令**（仅本次会话）— 数据记录是 Post-Release 阶段候选功能，用户认可。
+
+用户明确要求：
+1. **Logger 只能消费业务数据模型** — 不发 Modbus / 不读 HR 地址 / 不接触 Modbus scaling
+2. **每次波形刷新伴随一次数据记录**（**修订决策**）— 初版用 1Hz `Timer.periodic` 与 FAST poll 解耦，用户后续反馈 "我认为 UI 波形每刷新都应该伴随数据记录，这样才能最高效"。改为 **event-driven `record(PowerSnapshot)`**：provider `_onData` 每次 = 一行 CSV，与图表点 1:1 对应、无漏采样。`IOSink.writeln` 缓冲写入，FAST ~6.7/sec 调用 record 不等于每秒 6-7 次 disk sync — 字节累积在内存 chunk，buffer 满或 `stop()` 才落盘
+3. **不要设计复杂历史管理** — 用户自行管理 recordings 目录，UI 只做 Start/Stop + 状态显示
+4. **每次按下记录按钮弹原生 Save 对话框由用户选位置**（最终增量）— 初版隐式写 `<app_support>/recordings/`，用户后续要求 "应该在每次按下记录按钮的时候弹出调用系统存储文件的位置，由用户选择记录文件存放位置"。改为 START 按下先弹 `file_picker` 包 `FilePicker.platform.saveFile`（`allowedExtensions: ['csv']` + `lockParentWindow: true`），用户选完路径 → `provider.startRecording(filePath: picked)`；Cancel → 灰色 SnackBar "Recording cancelled — no file selected."，不动 logger session。`DataLogger.start({String? filePath})` 接受用户路径绕过 `recordingDirFactory`，若父目录缺失 `parent.create(recursive: true)` 防御性补建
+
+### 架构
+
+```
+Modbus response → RegisterParser → PowerSupplyData
+                                            │
+                                            +--> UI notify (ChangeNotifier)
+                                            │
+                                            +--> SnapshotStore (latest cache)
+                                            │
+                                            +--> DataLogger.record(snap)  [event-driven, each _onData]
+                                                        │
+                                                        v
+                                                     CSV file (<app_support>/recordings/)
+```
+
+**Logger 是消费者，不是通信任务** — 不发 Modbus / 不 spawn worker / 不开 serial port fd。
+全部在 UI isolate 新增模块 + provider 字段接入，**零通信层改动**。
+
+### 模块清单（全部新增）
+
+| 文件 | 职责 | 行数 |
+|------|------|------|
+| `lib/models/power_snapshot.dart` | `PowerSnapshot` 业务数据模型（9 字段）+ `toCsvRow()` 9 列 CSV 行 | 150 |
+| `lib/services/snapshot_store.dart` | `SnapshotStore` 单 isolate 内存缓存，`update` / `latest` / `clear` | 50 |
+| `lib/services/data_logger.dart` | `DataLogger` + `RecordingSession`，event-driven CSV writer（无 Timer），`record(PowerSnapshot)` + `recordingDirFactory` 注入点 | ~275 |
+| `lib/services/event_logger.dart` | `EventLogger` 预留接口（`debugPrint` only） | 35 |
+| `lib/widgets/recording_panel.dart` | `RecordingPanel` 最小 UI（START/STOP + elapsed + samples + file path + pulse dot） | 177 |
+| `test/power_snapshot_test.dart` | 9 个（from 转换 + power 推导 + toCsvRow 格式） | 165 |
+| `test/snapshot_store_test.dart` | 8 个（empty/update/clear 生命周期 + no dedup） | — |
+| `test/data_logger_test.dart` | 20 个（全部同步；start/stop/dispose + record() CSV + recordingDirFactory 注入 + RecordingSession） | — |
+
+### 修改清单
+
+- `lib/widgets/dashboard_panel.dart` — 接入 `RecordingPanel` 在 `SerialPanel` 之后；用 `SingleChildScrollView` 包 Column（Phase E 加 RecordingPanel 后总高超过最小窗口 640 → 原 `Spacer()` 布局溢出；改为滚动 + `mainAxisSize.min`）
+- `lib/providers/power_supply_provider.dart`：
+  - imports 新增 3 module（power_snapshot / data_logger / event_logger / snapshot_store）
+  - `final SnapshotStore _store = SnapshotStore()` + `late final DataLogger _logger = DataLogger()` + `final EventLogger _eventLogger = EventLogger()`（DataLogger 已不接收 store — event-driven 直接吃 snap，store 保留作 latest 缓存供未来消费者）
+  - `recordingSession` getter（UI 读 `_logger.session`）
+  - `_onData` 在 SLOT-sync 后构建 `final snap = PowerSnapshot.from(_data, activeSlot: _activeSlot)` **一次**，**同时** `_store.update(snap)` + `_logger.record(snap)` — CSV 行与图表点一一对应
+  - `disconnect` 中 `_store.clear()`（**不清 logger session** — 用户可能 unplug+replug 中途录制，file 保持 open，reconnect 后继续写同一 session；无 _onData 期间 record 不被调用，文件自然停增长）
+  - `dispose` 中 `_logger.dispose()`（同步 close 不阻塞 shutdown）
+  - 新增 `startRecording()` / `stopRecording()` 公共方法（try/catch + rethrow 让 UI surface 为 SnackBar + `notifyListeners`）
+- `pubspec.yaml` — `path_provider: ^2.1.4` dependency 新增
+
+### 数据模型决策
+
+**PowerSnapshot vs PowerSupplyData 区别**（用户明确要求）：
+- `PowerSupplyData`（worker→UI wire model）：含 HR 地址、原始寄存器值、Modbus scaling、memorySlots
+- `PowerSnapshot`（Logger 消费模型）：只含物理单位 (V/A/W/°C) + 高层枚举 (outputEnable bool / protectionState int / activeSlot int)
+- **不含 HR 地址 / 原始寄存器值 / Modbus scaling** — Logger 消费者只看业务语义
+
+9 字段：
+1. `timestamp` (DateTime) — UTC-capable，来自 `PowerSupplyData.timestamp`
+2. `voltage` (double V) — `data.outputVoltage`
+3. `current` (double A) — `data.outputCurrent`
+4. `power` (double W) — **derived `voltage * current`**（不读 `data.outputPower`，保持模型自包含）
+5. `inputVoltage` (double V) — `data.inputVoltage`
+6. `temperature` (double °C) — `data.temperature`
+7. `outputEnable` (bool) — `data.outputEnabled`
+8. `protectionState` (int 0..3) — `data.protectionStatus` (0=normal, 1=OVP, 2=OCP, 3=OTP)
+9. `activeSlot` (int 0..9) — 来自 provider `_activeSlot` tracker（quickSwitch + SLOW-poll SLOT-sync），**不读 HR[19]**
+
+`toCsvRow()` 格式：
+- `time` = ISO-8601 秒精度（截断 fractional seconds，非 UTC，无 TZ 后缀）→ `2026-07-24T20:30:01`
+- double = `toStringAsFixed(2)` + 去 trailing zeros 但保留 `.0`（`12.00` → `12.0`，`12.50` → `12.5`）
+- bool = 小写 `true` / `false`
+- int = `toString()`
+- 9 列顺序：`time,voltage,current,power,inputVoltage,temperature,outputEnable,protectionState,activeSlot`
+- **无 trailing newline**（`writeln` 加的 newline 是文件行分隔符，不是 row 内容）
+
+### SnapshotStore 契约
+
+- **No Modbus reads** — 不发 read，不 spawn worker，不碰 scheduler
+- **No Timer** — 不 poll，纯被动接收 provider `_onData` 回调
+- **No dedup** — `update` 总是覆盖
+- `latest()` 返回缓存引用直接（调用方契约 = read-only，不 mutate）
+- `clear()` 由 provider `disconnect` 调用防止跨 session 数据泄漏
+- **Event-driven 重构后 store 不再被 logger 直接消费** — logger 现在吃 provider 直接传入的 snap；store 保留作 "latest snapshot 缓存" 供未来消费者（debug overlay / 外部查询）。`update` 仍由 `_onData` 调用保持 `latest()` 时新
+
+### DataLogger 设计
+
+- **Event-driven，无 Timer** — provider `_onData` 每次 = 一次 `record(PowerSnapshot)` = 一行 CSV。与图表点 1:1 对应、无漏采样、无需独立采样 timer 与 poll loop 同步
+- **`record()` 守卫 `_sink != null`**（不是 `isRecording`）— start 设 sink，stop/dispose 都清 sink；dispose 不翻转 isRecording 但同样阻断 record。Provider 可无条件把 record 挂进 `_onData`，让 sink 守卫 own start/stop/dispose 语义
+- **IOSink 缓冲** — `writeln` 把字节累积到内存 chunk，buffer 满或 `stop()` 才落盘。FAST ~6.7/sec 调用 record ≠ 每秒 6-7 次 disk sync
+- **`start({String? filePath})`** — 接受用户从 Save dialog 选的路径（生产），或回退到 `recordingDirFactory` / `<app_support>/recordings/` 自动生成的 `<stamp>.csv`（测试和兜底路径）。filePath 非空时**绕过 `recordingDirFactory`**，且若 `file.parent` 不存在 `parent.create(recursive: true)` 防御性补建（Save dialog 大多数平台拒绝不存在父目录的路径，但用户可手输 SMB mount 等边缘路径）
+- 文件路径默认：`<app_support>/recordings/riden_recording_<yyyyMMdd_HHmmss>.csv`
+  - Linux: `$XDG_DATA_HOME/riden_power_supply/recordings/`（fallback `~/.local/share/...`）
+  - Windows: `%APPDATA%\beilusm.riden_power_supply\recordings\`
+- 文件名用**本地时间**（非 UTC）— 用户墙钟匹配
+- `start({filePath})`：filePath 非空 → `File(filePath).openWrite()`；否则 `recordingDirFactory`/app_support dir → timestamped name → `openWrite()`。然后 writeHeader
+- `record(snap)`：`_sink != null` → `writeln(snap.toCsvRow())` + `sampleCount++`；否则 no-op
+- `stop()`：`await sink.flush()` + `await sink.close()` 保证磁盘可见
+- `dispose()`：同步 close（不阻塞 shutdown — Phase E first version 优先 "never blocks shutdown"）
+- `recordingDirFactory` 注入点避免 `path_provider` platform channel（测试用 temp dir）
+
+### RecordingPanel Save dialog 流程
+
+- **START 按下** → `FilePicker.platform.saveFile(...)` 弹原生 Save 对话框
+  - `dialogTitle: 'Save recording as…'`
+  - `fileName: 'riden_recording_<yyyyMMdd_HHmmss>.csv'`（默认名，与 logger 的 fallback stamp 一致）
+  - `type: FileType.custom` + `allowedExtensions: ['csv']` — 限定 CSV 扩展名
+  - `lockParentWindow: true` — 模态锁定父窗口，避免用户在录制间继续操作 UI
+- 用户选完路径 → `provider.startRecording(filePath: picked)` → `DataLogger.start(filePath: picked)`
+- 用户 Cancel / 关闭 dialog → 返回 null → **灰色 SnackBar** "Recording cancelled — no file selected." + 不动 logger session（保持 idle，文件未创建）
+- 短路径 → 完整显示；超 56 字符 → 截断为 `.../<filename>`
+- **STOP 按下** → 直接 `provider.stopRecording()`，无对话框（停止录制不需选位置 — 文件路径在 START 时已固定）
+
+### EventLogger 预留接口
+
+Phase E 本阶段**只实现接口**（`debugPrint` only），不实现完整 UI。
+预留事件类型：
+- `ovp_trigger` / `ocp_trigger` / `otp_trigger` / `protection_clear`
+- `slot_change` / `usb_disconnect` / `usb_reconnect` / `param_write`
+- `recording_start` / `recording_stop`（provider 已调用）
+
+### 测试策略
+
+- **真实 FS + recordingDirFactory 注入**（避免 `path_provider` platform channel，`flutter_test` 无 `PathProviderFoundation` host setup）
+- **全部同步**（event-driven 后无 `Timer.periodic` → 无 `Future.delayed` wall-clock 等待；整个 data_logger_test 文件 <1s 跑完）
+- `stop()` `await sink.flush()` + `await sink.close()` 保证磁盘可见，`File.readAsString` 读回 canonical 内容
+- `tearDown` 递归删 temp dir
+
+测试分布：
+- `test/power_snapshot_test.dart` — 9 个（from 转换 + power 推导 + toCsvRow 格式 + 截断 fractional seconds + bool 序列化）
+- `test/snapshot_store_test.dart` — 8 个（empty 初始 + update 覆盖 + clear + 无 dedup + repeatable lifecycle）
+- `test/data_logger_test.dart` — 22 个（全同步）：
+  - 初始 session state（1 — idle）
+  - start（3 — isRecording + header + no-op 双调）
+  - start({filePath})（2 — 用户路径绕过 recordingDirFactory + missing parent 递归创建）
+  - record（6 — pre-start no-op / while-recording row+count / N 次 N 行精确 1:1 / post-stop frozen / armed-before-connect header-only / 9-column schema）
+  - stop（3 — flips + no-op 双调 + flushes header+rows）
+  - dispose（2 — idle no-op + idempotent / mid-recording drops sink post-dispose record no-op）
+  - RecordingSession（5 — elapsed guards + copyWith + default）
+
+### Analyzer / test 结果
+
+- `flutter analyze` 21 issues / **0 新增**
+- `flutter test` 52 → **91 PASS**（39 Phase E + 0 回归）
+
+### 铁律保持
+
+Phase E **零通信层改动**：
+- 不改 ModbusScheduler / modbus_task.dart
+- 不改 ModbusWorker / `_accumulateRead` 250ms
+- 不改 FAST 150ms / SLOW 1000ms
+- 不改 quickSwitch
+- 不改 `PowerSupplyData` 数据模型
+- 不改寄存器定义 / `register_conflicts`
+- 不改 `serial_port_scanner.dart` / `serial_port_enumerator.dart`
+- 不改 `modbus_service.dart` 抽象接口
+- 不改 `serial_modbus_service.dart` / `mock_modbus_service.dart`
+
+### 当前状态
+
+- **未 commit git** — 工作树有 6 new + 4 modified files
+- **未发布 v1.0.4** — 待用户决定是否本次会话发版
+- **下一步**：(1) `git add + commit + push` Phase E (2) 决定是否打 tag `v1.0.4` 触发双 CI (3) 同步 3 处版本来源（S1 pubspec / S2 env.sh / S3 env_windows.sh）若决定发版
+
+### 修改文件清单（本次 Phase E）
+
+新增：
+- `lib/models/power_snapshot.dart`
+- `lib/services/snapshot_store.dart`
+- `lib/services/data_logger.dart`
+- `lib/services/event_logger.dart`
+- `lib/widgets/recording_panel.dart`
+- `test/power_snapshot_test.dart`（9 个）
+- `test/snapshot_store_test.dart`（8 个）
+- `test/data_logger_test.dart`（22 个，全部同步；含 `start({filePath})` 组）
+
+修改：
+- `lib/widgets/dashboard_panel.dart` — `import 'recording_panel.dart'` + `const RecordingPanel()` 接入 + `SingleChildScrollView` 包 Column（修复 Phase E 加 RecordingPanel 后的最小窗口溢出）
+- `lib/providers/power_supply_provider.dart` — 4 个 import + 3 字段（store / logger / eventLogger）+ recordingSession getter + _onData 中构建 snap 一次喂 store + logger.record + disconnect 中 _store.clear + dispose 中 _logger.dispose + `startRecording({String? filePath})` / `stopRecording()`（filePath 透传给 DataLogger.start）
+- `lib/services/data_logger.dart` — `start({String? filePath})` 接受用户从 Save dialog 选的路径绕过 `recordingDirFactory`，filePath 非空时若父目录不存在 `parent.create(recursive: true)` 补建
+- `pubspec.yaml` — `path_provider: ^2.1.4` + `file_picker: ^8.1.0` dependency
+- `pubspec.lock` — lockfile 自动更新
+- `linux/flutter/generated_plugins.cmake` — flutter pub get 自动注册 file_picker Linux plugin
+
+### 未做（明确排除）
+
+- **不实现完整 EventLogger UI** — Phase E 只实现 `debugPrint` 接口
+- **不实现 session list / replay / export** — 用户明确要求 "不要设计复杂历史管理"
+- **不用独立采样 timer 解耦写文件**（**已修订**）— 初版 1Hz `Timer.periodic` 已改为 event-driven `record()`；CSV 落盘频率仍由 `IOSink` 缓冲 amortised，不等于每秒 6-7 次 disk sync
+- **不隐式写 `<app_support>/recordings/`**（**已修订**）— 用户每次 START 必弹原生 Save 对话框选位置；`recordingDirFactory` 路径仅在测试或生产 fallback 时用
+- **不改 `Runner.rc` / `metainfo.xml` / `env*.sh`** — Phase E 不发版（除非用户决定 v1.0.4）
+- **不持久化 RecordingSession 到磁盘** — session 是 in-memory state，进程重启后清零（recordings 目录的 CSV 文件本身持久化）
+- **不记录 HR 地址 / 原始寄存器值** — 用户明确要求 Logger 只消费业务数据模型
+- **不在 disconnect 中清 logger session** — 用户可能 unplug+replug 中途录制，file 保持 open，reconnect 后继续写同一 session
+- **不实现 file picker 流程的 widget 测试** — `FilePicker.platform.saveFile` 在 flutter_test 环境无 platform channel 实现，弹真 GTK / Win32 dialog 需 host；DataLogger.start({filePath}) 路径已通过纯 Dart 测试覆盖（绕过 recordingDirFactory + 父目录递归创建）
 

@@ -1,7 +1,7 @@
 name: riden_power_supply
 description: RIDEN Digital Programmable Power Supply - PC Upper Monitor
 publish_to: 'none'
-version: 1.0.3+1
+version: 1.0.4+1
 
 environment:
   sdk: ^3.12.0
@@ -13,6 +13,8 @@ dependencies:
   provider: ^6.1.2
   flutter_libserialport: ^0.4.0
   window_manager: ^0.4.3
+  path_provider: ^2.1.4
+  file_picker: ^8.1.0
 
 dev_dependencies:
   flutter_test:

@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import '../models/power_snapshot.dart';
 import '../models/power_supply_data.dart';
+import '../services/data_logger.dart';
+import '../services/event_logger.dart';
 import '../services/modbus_service.dart';
+import '../services/snapshot_store.dart';
 
 class PowerSupplyProvider extends ChangeNotifier {
   final ModbusService _service;
@@ -9,7 +13,29 @@ class PowerSupplyProvider extends ChangeNotifier {
 
   static const int maxChartPoints = 300;
 
+  // ── Phase E — recording pipeline ───────────────────────────────
+  // SnapshotStore / DataLogger / EventLogger are owned by the
+  // provider (UI isolate).  Logger is a pure consumer — it never
+  // issues Modbus reads, never spawns a worker, never touches the
+  // scheduler.  Recording is event-driven: [_onData] builds a
+  // [PowerSnapshot] from the canonical merged [PowerSupplyData]
+  // (post active-slot ovp/ocp sync), feeds it to [SnapshotStore]
+  // (latest snapshot cache, retained for future consumers) AND to
+  // [DataLogger.record] (one CSV row per waveform refresh).  No
+  // sampling timer — CSV rows line up 1:1 with chart points.
+  final SnapshotStore _store = SnapshotStore();
+  late final DataLogger _logger = DataLogger();
+  final EventLogger _eventLogger = EventLogger();
+
+  /// Read-only access for UI / tests.  RecordingSession reflects
+  /// start/stop state + sample count, refreshed by [startRecording]
+  /// / [stopRecording].  The provider's [notifyListeners] is invoked
+  /// after each lifecycle mutation so widgets rebuild with the new
+  /// session fields.
+  RecordingSession get recordingSession => _logger.session;
+
   PowerSupplyProvider(this._service);
+
 
   // ── Current snapshot (the RegisterCache) ───────────────────────
   PowerSupplyData _data = PowerSupplyData(timestamp: DateTime.now());
@@ -334,6 +360,13 @@ class PowerSupplyProvider extends ChangeNotifier {
     _bgSlotTimer = null;
     _sub?.cancel();
     _sub = null;
+    // Phase E — drop the cached snapshot so a stale reading
+    // doesn't bleed across sessions.  RecordingSession and the
+    // DataLogger's open CSV file stay alive (the user may unplug +
+    // replug mid-recording and expect the file to keep
+    // accumulating once the worker reconnects).  SnapshotStore
+    // re-fills on the next successful _onData after reconnect.
+    _store.clear();
     await _service.disconnect();
     _connected = false;
     _connectedPort = null;
@@ -360,9 +393,69 @@ class PowerSupplyProvider extends ChangeNotifier {
     _healthTimer?.cancel();
     _bgSlotTimer?.cancel();
     _sub?.cancel();
+    _logger.dispose(); // Phase E — flush + close any open CSV file
     _service.disconnect();
     super.dispose();
   }
+
+  // ── Phase E — recording control ─────────────────────────────────
+  //
+  // The DataLogger is a pure consumer — it never issues Modbus
+  // reads, never spawns a worker, never touches the scheduler.  Rows
+  // are written event-driven from [_onData] via [DataLogger.record],
+  // so each waveform refresh (FAST ~150ms + SLOW ~1000ms) lands one
+  // CSV row.  The provider exposes start/stop methods that the UI
+  // invokes directly from the recording panel; both methods invoke
+  // notifyListeners so widgets rebuild with the updated session
+  // state (file path, sample count, timestamps).
+  //
+  // Lifecycle:
+  //   * startRecording while disconnected — allowed; no _onData is
+  //     firing so [DataLogger.record] is never called and the file
+  //     contains only the header until the first real measurement
+  //     arrives.  User can pre-arm recording before plugging in the
+  //     device.
+  //   * startRecording while already recording — no-op (logger's
+  //     own guard).
+  //   * stopRecording while not recording — no-op.
+  //   * disconnect mid-recording — the open CSV file stays open; no
+  //     _onData fires while disconnected, so [record] is never
+  //     called and the file simply stops growing until reconnect.
+  //     User reconnect resumes writing to the same file (same
+  //     session); SnapshotStore is cleared so its `latest()` does
+  //     not leak a stale snapshot across sessions.
+  //   * dispose — defensive teardown via _logger.dispose() (sync
+  //     sink close, never blocks shutdown).
+
+  /// Begin recording.  [filePath] is the user-selected path from the
+  /// native Save dialog (invoked by the recording panel).  When
+  /// `null`, the logger falls back to a timestamped file under the
+  /// platform's application support directory — the path used by
+  /// tests.
+  Future<void> startRecording({String? filePath}) async {
+    try {
+      await _logger.start(filePath: filePath);
+      _eventLogger.log('recording_start',
+          {'file': _logger.session.filePath});
+    } catch (e) {
+      debugPrint('[PROVIDER] startRecording failed: $e');
+      rethrow; // surface to UI as SnackBar
+    }
+    notifyListeners();
+  }
+
+  Future<void> stopRecording() async {
+    try {
+      await _logger.stop();
+      _eventLogger.log('recording_stop',
+          {'samples': _logger.session.sampleCount});
+    } catch (e) {
+      debugPrint('[PROVIDER] stopRecording failed: $e');
+      rethrow;
+    }
+    notifyListeners();
+  }
+
 
   // ── Health check timer ─────────────────────────────────────────
 
@@ -483,6 +576,21 @@ class PowerSupplyProvider extends ChangeNotifier {
     }
 
     _updateCommStatus(CommStatus.online);
+    // Phase E — publish the canonical merged snapshot.  Build the
+    // PowerSnapshot ONCE (post active-slot ovp/ocp sync above, so it
+    // reflects the *active* slot's protection even when FAST poll
+    // delivered M0 storage raw values), then push to both the
+    // SnapshotStore (latest-snapshot cache, retained for future
+    // consumers / debug overlay) and to DataLogger.record.  Recording
+    // is event-driven: each _onData = one waveform refresh = one CSV
+    // row, so the recorded file lines up 1:1 with the chart points
+    // the user just saw — no 1Hz sampling timer to drift against the
+    // poll loop, no missed samples between ticks.  _logger.record is
+    // a buffered IOSink write, so FAST cadence (~6.7/sec) does NOT
+    // cause disk syncs per call.
+    final snap = PowerSnapshot.from(_data, activeSlot: _activeSlot);
+    _store.update(snap);
+    _logger.record(snap);
     _service.incNotify();
     notifyListeners();
   }

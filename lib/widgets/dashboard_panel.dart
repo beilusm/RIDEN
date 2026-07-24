@@ -6,6 +6,7 @@ import 'status_bar.dart';
 import 'measurement_display.dart';
 import 'setpoint_panel.dart';
 import 'serial_panel.dart';
+import 'recording_panel.dart';
 import '../models/power_supply_data.dart';
 
 class DashboardPanel extends StatelessWidget {
@@ -16,27 +17,42 @@ class DashboardPanel extends StatelessWidget {
     return Consumer<PowerSupplyProvider>(
       builder: (context, provider, _) {
         final data = provider.data;
+        // Scrollable container — Phase E added RecordingPanel below
+        // SerialPanel, pushing the total minimum height of the
+        // fixed-size Column past the smallest supported window
+        // (640px) and triggering a RenderFlex overflow.  Wrapping in
+        // SingleChildScrollView lets the column grow naturally and
+        // scroll when the host window is too short, while preserving
+        // the top-aligned layout (mainAxisSize.min) that the old
+        // Spacer() provided when content fit.  The bg color is kept
+        // on the outer Container so the dark backdrop fills the
+        // available height whether content is shorter or taller.
         return Container(
           color: AppTheme.bgDarkest,
-          padding: const EdgeInsets.fromLTRB(6, 8, 6, 6),
-          child: Column(
-            children: [
-              // ── Top info bar ──────────────────────────────────
-              StatusBar(data: data, provider: provider),
-              const SizedBox(height: 6),
-              // ── Measurements (large V/A/W) ────────────────────
-              MeasurementDisplay(data: data),
-              const SizedBox(height: 6),
-              // ── Output switch ────────────────────────────────
-              _OutputCard(data: data, provider: provider),
-              const SizedBox(height: 6),
-              // ── Settings ──────────────────────────────────────
-              SetpointPanel(data: data, provider: provider),
-              const SizedBox(height: 6),
-              // ── Serial connection ─────────────────────────────
-              const SerialPanel(),
-              const Spacer(),
-            ],
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(6, 8, 6, 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ── Top info bar ──────────────────────────────────
+                StatusBar(data: data, provider: provider),
+                const SizedBox(height: 6),
+                // ── Measurements (large V/A/W) ────────────────────
+                MeasurementDisplay(data: data),
+                const SizedBox(height: 6),
+                // ── Output switch ────────────────────────────────
+                _OutputCard(data: data, provider: provider),
+                const SizedBox(height: 6),
+                // ── Settings ──────────────────────────────────────
+                SetpointPanel(data: data, provider: provider),
+                const SizedBox(height: 6),
+                // ── Serial connection ─────────────────────────────
+                const SerialPanel(),
+                const SizedBox(height: 6),
+                // ── Recording (Phase E) ────────────────────────────
+                const RecordingPanel(),
+              ],
+            ),
           ),
         );
       },
