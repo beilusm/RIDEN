@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.3 已正式 Release，Phase D USB watcher + flag-based disconnect 固化；Phase E Measurement Recording 数据记录 (event-driven record + 用户选择 Save 位置 + UI + 39 测试) APPLIED 未提交 — 用户最终修订录制策略：每次波形刷新写一行 (event-driven) + START 按键弹原生 Save File dialog 由用户选位置 (`file_picker: ^8.1.0`)。下一阶段候选：Phase E git commit + v1.0.4 release / Phase B.5 残留 audit / quickSwitch 延迟优化**。
+RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.4 已正式 Release (commit `d047ed2`, tag `v1.0.4`，双 CI 全绿，4 assets)，Phase D USB watcher + Phase E Measurement Recording 数据记录固化。Phase E 实现：每次波形刷新 (event-driven `record(snap)`) 写一行 CSV，START 按键弹原生 Save File dialog 由用户选位置 (`file_picker: ^8.1.0`)。下一阶段候选：Phase B.5 残留 audit / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码**。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -1331,6 +1331,19 @@ Phase E 本阶段**只实现接口**（`debugPrint` only），不实现完整 UI
 - `flutter analyze` 21 issues / **0 新增**
 - `flutter test` 52 → **91 PASS**（39 Phase E + 0 回归）
 
+### UI bug 修复 (v1.0.4 hot-fix)
+
+用户报告"记录卡牌上看不到字，要么全绿要么全红"。根因：`recording_panel.dart` 的 `color.withValues(alpha: 0x18)` 是误用 — Flutter 3.32+ 新 `Color.withValues({double? r, double? g, double? b, double? a})` 期望 0.0–1.0 浮点 alpha，传 `0x18`（整型 24）被 clamp 到 `1.0` = 100% 不透明，绿/红实色盖住按钮文字。改用 codebase 一致的 `withAlpha(0x18)`（int 0..255 API），与 `serial_panel.dart:332` / `setpoint_panel.dart:82` 习惯对齐。仅 `lib/widgets/recording_panel.dart:163` 单行改动。
+
+### 已发布 v1.0.4
+
+- commit `d047ed2`（推送 origin/main）
+- tag `v1.0.4` → 触发 `release-linux.yml` + `release-windows.yml` 双 CI 全绿
+- 4 assets 上传完成：`RIDEN_PowerSupply-1.0.4-linux-x86_64.AppImage` + `RIDEN_PowerSupply-1.0.4-windows-x64.zip` + `SHA256SUMS-linux.txt` + `SHA256SUMS-windows.txt`
+- 3 处版本来源已同步 `1.0.4`：S1 pubspec `1.0.4+1` / S2 `packaging/config/env.sh` / S3 `packaging/config/env_windows.sh`；S4 `Runner.rc` `VERSION_AS_STRING "1.0.0"` 不动（L1.2-A accepted — Flutter 工具链自动注入 FileVersion/ProductVersion 数值字段）；S5 metainfo.xml CI 自动注入（tag 版本 + 当天日期）
+- Release notes 极简版（用户明确要求 "release 说明中不要有乱七八糟的东西，只需要有更新日志和极其重要的东西"）：更新日志 6 条 + 下载表 + 校验完整性命令 + 前置依赖（VC++ Redist / GTK3 / FUSE / ch341 / udev）+ 已知未实现 3 条 + 源码 commit hash
+- Release URL：https://github.com/beilusm/RIDEN/releases/tag/v1.0.4
+
 ### 铁律保持
 
 Phase E **零通信层改动**：
@@ -1346,9 +1359,9 @@ Phase E **零通信层改动**：
 
 ### 当前状态
 
-- **未 commit git** — 工作树有 6 new + 4 modified files
-- **未发布 v1.0.4** — 待用户决定是否本次会话发版
-- **下一步**：(1) `git add + commit + push` Phase E (2) 决定是否打 tag `v1.0.4` 触发双 CI (3) 同步 3 处版本来源（S1 pubspec / S2 env.sh / S3 env_windows.sh）若决定发版
+- **已发布 v1.0.4**：commit `d047ed2` (推送 origin/main)、tag `v1.0.4`、双 CI (`release-linux.yml` + `release-windows.yml`) 全绿、4 assets 上传完成 (AppImage + Windows ZIP + 2 SHA256SUMS)；极简 release notes (更新日志 + 校验 + 前置依赖) 见 https://github.com/beilusm/RIDEN/releases/tag/v1.0.4
+- **3 处版本来源已同步 1.0.4**：S1 pubspec `1.0.4+1` / S2 env.sh / S3 env_windows.sh；S4 `Runner.rc` 不动（L1.2-A accepted，Flutter 工具链自动注入）；S5 metainfo.xml CI 自动注入（tag 版本 + 当天日期）
+- **下一版本方向**：Phase B.5 残留 audit / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码
 
 ### 修改文件清单（本次 Phase E）
 
