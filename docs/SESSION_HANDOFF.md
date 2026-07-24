@@ -423,6 +423,80 @@ fvm dart analyze lib | rg -i deprecated
 - **新增文件**: `lib/services/serial_port_scanner.dart`, `lib/services/serial_port_enumerator.dart`, `test/serial_port_scanner_test.dart`, `test/serial_connect_applies_scanner_test.dart`, `test/auto_scan_retry_test.dart`。
 
 
+### APPLIED — Phase D: USB watcher — 1s scanCh340 替代 400ms blind connect retry (`lib/services/modbus_service.dart` + `lib/services/serial_modbus_service.dart` + `lib/services/mock_modbus_service.dart` + `lib/providers/power_supply_provider.dart` + `lib/app.dart` + `test/usb_watcher_test.dart`)
+
+- **触发**: 用户反馈"还不够易用，能不能一直监控串口设备又不消耗下位机那可怜的响应性能"。Phase C 的 400ms `Timer.periodic` 在 CH340 缺席时每 400ms 跑一遍 `connect` — 即使 `scan-before-spawn` reorder 让 cycle 只 ~30ms，**仍在 hot path 上重复尝试 spawn worker / open port**，并会在设备刚拔走后 emit 一串无意义的 `[PROVIDER] connect failed:` 日志。用户的核心 discontent 是"持续监控但不要压垮下位机响应性能" — 需要"USB 在场但设备响应慢不应被持续 hammer"。
+- **方案**: 一个**事件驱动**的 USB watcher 取代**重复 connect** 的 400ms timer。
+  - watcher 每 **1s** 跑一次 `_service.scanCh340()` — 这是一次纯 USB VID/PID 探测（`sp_get_port_usb_vid_pid`），**完全不碰 Modbus / 不调 `_accumulateRead` / 不 spawn worker / 不开 serial port fd**。CH340 缺席时设备**完全不响应任何 traffic** （纯粹 host-side enumeration，下位机 0 消耗）。
+  - 找到 CH340 时才调 `connect()` — `connect` 内部仍按 Phase C scan-before-spawn order 走（scanner 已经真机在线，connect 的 scanner 调用会在数 ms 内返回 found）。
+  - **主动断开**: 已连接状态下，watcher tick 发现 CH340 消失 → 立即 `disconnect(stopWatcher: false)` — 撕掉 worker **before** 在途 Modbus READ 排到 timeout （节省最坏 ~250ms futile `_accumulateRead` against dead port）。watcher 仍 alive，下次 CH340 回来立即重连。这是上一段"拔出响应: 尽快停 poll + 重进扫描"对应实现。
+  - **已知 worker crash (P1-2)** 不影响 watcher — `_connected = false` 之后下次 tick 看到 CH340 在 → immediately relight connect，无需用户按按钮。
+  - **不调 ModbusScheduler / 不调 ModbusWorker / 不动 FAST 150ms / SLOW 1000ms / `_accumulateRead` 250ms**三个铁律数值 — watcher 只Operation 在 Provider 层之上。
+- **接口扩展**:
+  - `ModbusService`（abstract）新增 `Future<SerialPortScanResult> scanCh340()` — 轻量 USB 探测，不发 Modbus 流量。
+  - `SerialModbusService.scanCh340()` 直接转发 `_scannerFactory().scanCh340()` — **不依赖 _worker**（即使有 alive worker，watcher 也走独立 one-shot isolate，不受在途 poll round-trip 影响）。
+  - `MockModbusService.scanCh340()` 默认返回 `notFound('mock: no CH340 in mock env')` — mock 模式下 app 启动立即进入 watcher idle 状态，不 spawn worker / 不开 polling。测试 subclass override 此方法驱动 watcher 状态机。
+- **PowerSupplyProvider 重构**:
+  - `_autoScanTimer` (400ms) → `_usbWatchTimer` (1000ms) — 4× 慢但是 zero device cost。
+  - `startAutoScan` / `stopAutoScan` / `isAutoScanning` / `_autoScanTick` → `startUsbWatch` / `stopUsbWatch` / `isUsbWatching` / `_usbWatchTick`。
+  - `_usbWatchTick` 新 state-machine:
+    - `_connecting == true` → 早退（让在途 connect 完成，避免双 spawn）。
+    - `_service.scanCh340().then((result))` 异步：
+      - `!result.found && _connected` → 主动 `disconnect(stopWatcher: false)` — 撕 worker，watcher 留着。
+      - `!result.found && !_connected` → no-op，device stays cold（**用户核心需求**）。
+      - `result.found && _connected` → no-op，polling 架构自己保活。
+      - `result.found && !_connected` → `connect().catchError` — 自动重连。
+  - `disconnect({bool stopWatcher = true})` — 新增 `stopWatcher` 参数：用户 explicit DISCONNECT 默认 `true`（停 watcher，不打脸）；watcher 自己发的 proactive disconnect 调 `false`（保持 watcher alive 继续观察 CH340 回来）。这是不打脸特性的 key。
+  - `dispose()` / `disconnect` 顶部继续做兜底 cancel。
+  - `app.dart` initState 改为 `startUsbWatch()`，并更新注释解释 watcher 行为。
+- **删除文件**: `test/auto_scan_retry_test.dart` — Phase C 的 8 个 400ms blind retry test 已被 Phase D 10 个事件驱动测试取代。
+- **新增文件**: `test/usb_watcher_test.dart` — 10 个 fakeAsync 测试覆盖新状态机: `isUsbWatching`、first tick 同步、connected 时 timer armed but ticks no-op、**no CH340 + not connected → device stays cold** (用户需求核心 proof)、CH340 appears mid-stream → tick auto-connect、**connected + CH340 vanishes → proactive disconnect(stopWatcher:false) + watcher stays armed** + replug → auto-reconnect (拔出响应实测)、user disconnect() 默认 stopWatcher=true 停 watcher 不打脸、worker crash relights via watcher、dispose cancels、startUsbWatch 幂等。
+- **测试 mock**: `_UsbControllableMock extends MockModbusService` — `plugCh340()` / `unplugCh340()` 测试 thread 驱动 USB 状态；`connectCount` 观测 watcher tick 是否调 connect；`scanCh340()` 根据内部布尔返回 `SerialPortScanResult(found / notFound)`。
+- **遵守禁令**:
+  - 不修改 `ModbusScheduler` / `ModbusWorker` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms — 全部 polling 架构数值铁律保留
+  - 不修改 `quickSwitch` / 数据模型 / 寄存器定义 / `register_conflicts` / `register_definition`
+  - 不修改 `serial_port_scanner.dart` / `serial_port_enumerator.dart`（Phase C 文件不动，只是上层调用方式变了）
+  - 不修改 `serial_connect_applies_scanner_test.dart` / `serial_port_scanner_test.dart`（service 层 connect-integration 和 scanner pure 单元保持 PASS — Phase C 行为还在）
+  - 不修改 `SerialPanel` 手动端口路径 — explicit port 仍 bypass scanner（通过 `ModbusService.connect(port: ...)` 走 Phase C explicit 路径）
+- **验证**:
+  - `fvm flutter analyze` — **21 issues / 0 新增**（与 Phase B.2 + Phase C baseline 严格相等；`_onPollMiss` 仍是 P1-1 OPEN warning，不属本次新增）
+  - `fvm flutter test` — **50 PASS**（Phase C 的 48 baseline 中 `auto_scan_retry_test.dart` 8 个 → `usb_watcher_test.dart` 10 个，净 +2 = 50）。
+- **新增/修改文件**:
+  - 新增: `test/usb_watcher_test.dart`
+  - 删除: `test/auto_scan_retry_test.dart`
+  - 修改: `lib/services/modbus_service.dart`, `lib/services/serial_modbus_service.dart`, `lib/services/mock_modbus_service.dart`, `lib/providers/power_supply_provider.dart`, `lib/app.dart`
+- **与 Phase C 的关系**: Phase C 的 scanner 基础设施（`SerialPortScanner` / `enumerateUsbPortsViaIsolate` / `SerialPortScanException` / `_scannerFactory` 注入）**完整保留并复用** — Phase D 把 Phase C 的 400ms blind connect retry 升级成 1s event-driven USB watcher，**worker spawn / serial port open / Modbus 流量从"每 400ms 试一遍"变成"USB 报告 CH340 在场才试一次"**。这是用户"持续监控串口设备又不消耗下位机响应性能"需求的核心响应。
+
+
+### APPLIED — Phase D follow-up: currentPort API + flag-based disconnect 语义 (`lib/services/modbus_service.dart` + `lib/services/serial_modbus_service.dart` + `lib/services/mock_modbus_service.dart` + `lib/providers/power_supply_provider.dart` + `test/usb_watcher_test.dart`)
+
+- **触发**: 三个用户验证发现的 UX bug:
+  1. **"为什么 UI 没刷新当前选择的串口设备"** — z否 auto-scan 路径调 `connect(port: null)`，provider 存 `_connectedPort = null` → SerialPanel 的 `p.connectedPort ?? _port` fallback 到 panel 自己的状态而非真实解析端口。
+  2. **"手动点击几次 connect 和 disconnect 自动连接和自动识别会出问题"** — 同根因：手动 disconnect 停 watcher，手动 connect 不重启 → 几次点击后 watcher 已停 → 后续无 unplug/crash 兜底。
+  3. **"已连接状态下手动 disconnect 后再拔掉设备再插上不会自动连接"** — 同根因：watcher 已被 disconnect 停掉，无观察者对后续 USB 事件做反应。
+- **修复**:
+  - **新增 `ModbusService.currentPort` abstract getter** + `SerialModbusService._currentPort` 在 connect 成功后存 `effectivePort`（scanner 解析的真实端口名，e.g. `/dev/ttyUSB0`）。`MockModbusService.currentPort` 默认返回 `null`。Provider.connect 改 `_connectedPort = _service.currentPort ?? port` 优先从 service 读真实端口。`disconnect` / `connect-fail` 都清 `_currentPort = null`。
+  - **`disconnect` 参数从 `stopWatcher: bool` 改为 `userInitiated: bool`** — 语义重命名更准确。新行为：用户 explicit disconnect (`userInitiated: true` 默认) **不再 stopUsbWatch**，而是设 `_userDisconnected = true` flag。
+  - **新增 `bool _userDisconnected = false` 状态 flag** + watcher tick 新逻辑：
+    - `_userDisconnected = true` + CH340 在场 → no-op（尊重用户 disconnect 决定，不打脸）
+    - `_userDisconnected = true` + CH340 物理拔走 → **清 flag**（物理事件否决用户意图）
+    - 下次 CH340 插回 + flag 已清 → watcher 自动 `connect()` → 用户看到自动重连
+  - **`connect()` finally 块调 `startUsbWatch()`** — 即使 connect 之前 watcher 被某条路径停了，connect 成功后立即重启。(`startUsbWatch` idempotent — 已 armed 时 no-op)
+  - **`connect()` 入口清 `_userDisconnected = false`** — 用户的主动 connect 立即消费掉之前可能残留的 disconnect 意图 flag。
+  - **`dispose()` 仍 `stopUsbWatch()` 兜底** — 防泄漏 (provider 销毁时的确定性 teardown)。
+  - **`MockModbusService.scanCh340()` 默认返回 found(`'MOCK'`)** — Mock 模式代表"虚拟设备在场"，不能让 watcher 在 mock polling 起来后 1s 就主动 disconnect。语义对齐 `MockModbusService.connect` 启动 mock polling 这一事实。之前默认 notFound 会让 mock 模式启动后立刻被 watcher 主动断开 → 行为反了。
+- **测试套件重写**:
+  - `test/usb_watcher_test.dart` 8 → 12 个 fakeAsync 测试。新增:
+    - "auto-scan path surfaces resolved port name (Phase D fix)" — UI port 显示 bug 的回归测试。
+    - "user disconnect then unplug+replug auto-reconnects (Phase D follow-up fix...)" — 拔掉再插回的自动重连回归。
+    - "manual disconnect + manual connect cycle preserves watcher (Phase D fix)" — 几次点击手动 connect/disconnect 后仍保活。
+  - 修复了**之前两个 async-bodied 测试有 fakeAsync caveat**: `await` 后的代码在 fakeAsync 里**不会执行**（断言被静默跳过）— 之前那些测试"通过"只是因为它们没真正运行过断言。改成 sync 风格 (`provider.disconnect(); async.flushMicrotasks();`) 后断言才真正运行。这个 caveat 在 Phase C 的 `auto_scan_retry_test.dart` 里同样存在但未被发现，Phase D 重写时一并修复。
+  - `_UsbControllableMock` 加 `currentPort` override 返回 fake `'/dev/ttyUSB0'` 让 provider 能读到。
+- **遵守禁令**: 三个铁律数值全部未动 — `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / `ModbusScheduler` / `ModbusWorker` / `quickSwitch` / 数据模型 / 寄存器定义 / `serial_port_scanner.dart` / `serial_port_enumerator.dart`。`ModbusService.scanCh340()` 接口契约不变。
+- **验证**: `fvm flutter analyze` — **21 issues / 0 新增**（与 Phase B.2 + Phase C baseline 严格相等）。`fvm flutter test` — **52 PASS** (Phase D 50 → 12 watcher test + 40 baseline，外加 4 connect-integration pure service 测试，所有之前 P1-2 lifecycle 测试保留 PASS；mock currentPort 路径未被 work crash 测试的 `simulateCrash` 路径污染 — 触发 `disconnect(userInitiated: false)` 的 P1-2 路径不会设 _userDisconnected flag)。
+- **修改文件**: `lib/services/modbus_service.dart` (+`String? get currentPort`接口), `lib/services/serial_modbus_service.dart` (+`_currentPort` field + connect 路径赋值 + disconnect/catch 清空), `lib/services/mock_modbus_service.dart` (+`currentPort` override), `lib/providers/power_supply_provider.dart` (connect 读 service.currentPort + `_userDisconnected` flag + disconnect 改参数 + finally 重启 watcher + 入口清 flag), `test/usb_watcher_test.dart` (重写 3 个回归测试 + 新增 4 个)。
+- **跨平台性**: 全部 Dart 逻辑层改动 —`flutter_libserialport` 包内部已封装 Linux udev 枚举和 Windows SetupDi API，CH340 的 USB VID/PID（0x1A86/0x7523）跨平台一致。Windows 上跑当前代码可直接 `fvm flutter run -d windows` 真机自测，需 Windows 主机完成 Phase W1 release (`fvm flutter build windows --release` + `packaging/scripts/make_windows_zip.sh` + tag-triggered `release-windows.yml` CI)。
+
 ### Pre-existing — P2
 - `SerialModbusService._dataController` 永不 close (设计如此, long-lived broadcast)。
 - `PowerSupplyProvider.dispose` 调用 `_service.disconnect()` 未 await (应用退出无影响)。

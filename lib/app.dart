@@ -33,20 +33,26 @@ class _PowerSupplyShellState extends State<PowerSupplyShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // App boot: arm the auto-scan timer so the app keeps probing
-      // for a CH340 every ~400ms while no device is connected.
-      // Tick guards (`_connected || _connecting`) make subsequent
-      // ticks no-op once a real handshake lands.
+      // App boot: arm the USB watcher so the app keeps probing the
+      // host's USB port list for a CH340 at 1s cadence WITHOUT
+      // spawning a worker or sending Modbus traffic.  When a CH340
+      // is observed the watcher calls connect() (which itself
+      // re-runs the USB probe synchronously then spawns the
+      // worker); when absent the device's serial port stays cold.
       //
-      // User-initiated disconnect() stops the timer entirely so the
-      // user's explicit disconnect is honoured.  Worker crash (P1-2)
-      // leaves the timer alive → next tick relights connect() → the
-      // app auto-recovers from yanked-USB / device reboot without
-      // requiring a manual button press.
+      // The watcher stays armed across:
+      //   * connect success — tick becomes no-op (the polling
+      //     architecture owns keep-alive while _connected).
+      //   * worker crash (P1-2) — next tick sees _connected=false
+      //     and CH340 present → relights connect.
+      //   * user explicit disconnect() — stopUsbWatch() inside
+      //     disconnect() cancels the timer so DISCONNECT is honoured.
+      //   * watcher-observed unplug — disconnect(stopWatcher: false)
+      //     keeps the timer armed so reconnect fires automatically.
       try {
-        context.read<PowerSupplyProvider>().startAutoScan();
+        context.read<PowerSupplyProvider>().startUsbWatch();
       } catch (e) {
-        debugPrint('startAutoScan error: $e');
+        debugPrint('startUsbWatch error: $e');
       }
     });
   }

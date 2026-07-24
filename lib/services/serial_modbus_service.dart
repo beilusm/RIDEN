@@ -23,6 +23,18 @@ class SerialModbusService implements ModbusService {
   @override Stream<PowerSupplyData> get dataStream => _dataController.stream;
   final _dataController = StreamController<PowerSupplyData>.broadcast();
 
+  /// Phase D fix — resolved port name from the last successful
+  /// [connect].  Set from `effectivePort` after the scanner (or the
+  /// caller's explicit port) lands; cleared on [disconnect] and on
+  /// the connect-fail cleanup path.  Read by the provider so the UI
+  /// shows the actual port the device is talking through (scanner
+  /// path: caller passes `port: null` → service scanner resolves
+  /// `/dev/ttyUSB0` → this getter returns `/dev/ttyUSB0`, not the
+  /// caller's `null`).
+  @override
+  String? get currentPort => _currentPort;
+  String? _currentPort;
+
   /// Factory that builds a fresh [SerialPortScanner] for each
   /// [connect] call when the caller didn't explicitly specify a port.
   ///
@@ -161,6 +173,11 @@ class SerialModbusService implements ModbusService {
 
       await _worker!.connect(
           port: effectivePort, baudRate: baudRate, address: address);
+      // Phase D fix — stamp the resolved port name so the UI can
+      // display the actual port the worker is talking through.
+      // On the auto-scan path `port` was null inbound; effectivePort
+      // is what the scanner resolved (e.g. /dev/ttyUSB0).
+      _currentPort = effectivePort;
       _startStatTimer();
     } catch (e) {
       // Connect failed (scanner found no CH340, worker spawn /
@@ -183,6 +200,9 @@ class SerialModbusService implements ModbusService {
             _worker = null;
           }
         }
+        // Phase D fix — clear the resolved port so a stale name
+        // doesn't leak into the UI after a failed connect attempt.
+        _currentPort = null;
       } catch (cleanupErr) {
         debugPrint('[SERIAL] connect-fail cleanup error: $cleanupErr');
       }
@@ -253,6 +273,21 @@ class SerialModbusService implements ModbusService {
     return aliveWorker.listPorts();
   }
 
+  /// Phase D — USB watcher entry point.  Probes the host for a
+  /// CH340 adapter WITHOUT touching the worker isolate or the
+  /// device's serial port.  This is the cheap "is the device
+  /// plugged in?" check the UI polls at 1s cadence; only when it
+  /// returns [SerialPortScanResult.found] does the caller go on to
+  /// spawn a worker / handshake / open the port via [connect].
+  ///
+  /// The worker is not involved at all — even if a live handle is
+  /// present, we still run a fresh one-shot isolate through the
+  /// injected [_scannerFactory] so the watcher has an independent
+  /// truth source unaffected by an in-flight poll round-trip.
+  @override
+  Future<SerialPortScanResult> scanCh340() => _scannerFactory().scanCh340();
+
+
   List<MemorySlot> _mergeSlots(
       List<MemorySlot> existing, List<MemorySlot> incoming) {
     final result = List<MemorySlot>.from(existing);
@@ -313,6 +348,7 @@ class SerialModbusService implements ModbusService {
         _worker = null;
       }
     }
+    _currentPort = null;
     _current = PowerSupplyData(timestamp: DateTime.now(), commStatus: CommStatus.offline);
     _dataController.add(_current);
   }

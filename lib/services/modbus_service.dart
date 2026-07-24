@@ -1,5 +1,6 @@
 import 'dart:async';
 import '../models/power_supply_data.dart';
+import 'serial_port_scanner.dart';
 
 /// Abstract interface for Modbus RTU communication with the RIDEN
 /// power supply.  Swap implementations at runtime to switch between
@@ -12,12 +13,45 @@ abstract class ModbusService {
   /// Whether the service is currently connected / polling.
   bool get isConnected;
 
+  /// Phase D fix — the actual port name the service is connected to.
+  ///
+  /// Differs from the caller-supplied port (which may be `null` on
+  /// the auto-scan path) because the service's internal scanner may
+  /// resolve a CH340 port name when the caller passed `null` to
+  /// [connect].  Exposed so the provider / UI can display the
+  /// *resolved* port name (e.g. `/dev/ttyUSB0`) rather than the raw
+  /// caller input.  Returns `null` when not connected.
+  String? get currentPort;
+
   /// Open the connection and start the polling timer.
   Future<void> connect({String? port, int baudRate = 115200, int address = 1});
 
   /// Enumerate available serial port names on the host.
   /// Returns an empty list when no ports are detected.
   Future<List<String>> listPorts();
+
+  /// Phase D — lightweight USB-port probe for the CH340 adapter
+  /// WITHOUT sending any Modbus traffic.  Runs
+  /// `sp_get_port_usb_vid_pid` inside a one-shot isolate (production
+  /// path) and returns a [SerialPortScanResult] whose [SerialPortScanResult.found]
+  /// flag tells the caller whether a CH340 is currently attached.
+  ///
+  /// Used by [PowerSupplyProvider]'s USB watcher (1s cadence) so the
+  /// polling loop stays cold while the CH340 is absent — the worker
+  /// isolate is NOT spawned, no `_accumulateRead` round-trips hit the
+  /// device's serial port, and the only cost is the host-side USB
+  /// enumeration (~20-50ms per tick).  connect() is only invoked
+  /// AFTER the watcher observes a CH340 surface.
+  ///
+  /// Symmetric teardown: when an already-connected device is
+  /// physically unplugged, the watcher's next tick observes `found
+  /// == false` and proactively tears down the worker BEFORE the
+  /// pending Modbus READ times out (saving up to ~250ms of futile
+  /// `_accumulateRead` against a dead port).
+  ///
+  /// Tests override this on the mock service to simulate plug /
+  /// unplug events without spawning an isolate.
+  Future<SerialPortScanResult> scanCh340();
 
   /// Stop polling and release the underlying connection.
   Future<void> disconnect();

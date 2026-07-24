@@ -12,7 +12,7 @@
 export APP_ID="io.github.beilusm.ridenps"
 export APP_NAME="RIDEN_PowerSupply"          # 文件名用下划线，避免空格敏感工具
 export APP_DISPLAY_NAME="RIDEN Power Supply" # UI 显示名 / 资源 ProductName
-export APP_VERSION="1.0.2"
+export APP_VERSION="1.0.3"
 # Windows Flutter build 路径用 x64（与 Linux 一致），不区分 x86_64 / x64
 export FLUTTER_ARCH="x64"
 export WIN_ARCH_LABEL="x64"                   # ZIP 命名用

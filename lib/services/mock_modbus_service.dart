@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:math';
 import '../models/power_supply_data.dart';
 import 'modbus_service.dart';
+import 'serial_port_scanner.dart';
 
 /// Generates realistic simulated power-supply data so the UI can be
 /// previewed without a physical device connected.
@@ -53,6 +54,14 @@ class MockModbusService implements ModbusService {
   @override
   bool get isConnected => _timer != null && _timer!.isActive;
 
+  /// Phase D fix — mock report `null` because it has no real serial
+  /// port.  Mock-mode UI displays `MOCK` via its own fallback path
+  /// (MockModbusService.listPorts returns `/dev/ttyUSB0`,
+  /// `/dev/ttyUSB1`, `MOCK`).
+  @override
+  String? get currentPort => null;
+
+
   @override
   Stream<PowerSupplyData> get dataStream => _controller.stream;
 
@@ -67,6 +76,30 @@ class MockModbusService implements ModbusService {
   @override
   Future<List<String>> listPorts() async =>
       ['/dev/ttyUSB0', '/dev/ttyUSB1', 'MOCK'];
+
+  /// Phase D — mock USB watcher entry point.
+  ///
+  /// Mock-mode semantics: reports the CH340 as **present** so the
+  /// USB watcher's "CH340 vanished → proactive disconnect" branch
+  /// does NOT fire against the mock's own simulated polling
+  /// session.  Without this, every app run in mock mode would see
+  /// the watcher disconnect the (mock) working connection 1s after
+  /// `MockModbusService.connect()` succeeded — the watcher treats
+  /// "no CH340 on the host" as "physical unplug" and tears down
+  /// the worker.  Mock mode is a virtual-device *preview* path, so
+  /// "CH340 always present" is the correct mock contract.
+  ///
+  /// Production wires `scanCh340()` to a one-shot `Isolate.run`
+  /// enumeratePorts call that returns the host's real CH340 state.
+  /// Tests override this to drive the watcher state machine
+  /// (e.g., plug-in a fake CH340, then unplug mid-session) without
+  /// spawning an isolate or touching FFI.
+  @override
+  Future<SerialPortScanResult> scanCh340() async =>
+      const SerialPortScanResult(
+        portName: 'MOCK',
+        reason: 'mock: CH340 always present in mock mode',
+      );
 
   @override
   Future<void> disconnect() async {
