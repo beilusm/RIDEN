@@ -1,4 +1,6 @@
-import 'dart:io' show Platform;
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -111,43 +113,45 @@ class _ToggleButton extends StatelessWidget {
       onTap: () async {
         try {
           if (recording) {
+            // STOP — flush + close the underlying CSV sink.  The session
+            // state is retained (filePath + startTime still readable
+            // after stop) so we can read the tmp file back and export.
             await provider.stopRecording();
-          } else {
-            // Phase 4 Android — `file_picker`'s `saveFile` on Android
-            // uses SAF (Storage Access Framework) which REQUIRES the
-            // caller to supply the file `bytes` upfront — there is no
-            // "open a writable stream to this URI" mechanism. That
-            // fits one-shot export, NOT continuous recording where the
-            // IOSink writes incrementally as the FAST poll ticks.
-            //
-            // Android path therefore bypasses the dialog and lets the
-            // DataLogger default-dir factory pick `path_provider`'s
-            // app-private storage (<app_support>/recordings/). The user
-            // can later pull the file via adb / file manager / share
-            // intent (Phase 4.1 will add a "Share / Export" button).
-            // Desktop path keeps the native Save dialog as before.
-            String? picked;
-            if (!Platform.isAndroid) {
-              final now = DateTime.now();
-              String p(int v) => v.toString().padLeft(2, '0');
-              final stamp =
-                  '${now.year}${p(now.month)}${p(now.day)}_${p(now.hour)}${p(now.minute)}${p(now.second)}';
-              final defaultName = 'riden_recording_$stamp.csv';
-              picked = await FilePicker.platform.saveFile(
-                dialogTitle: 'Save recording as…',
-                fileName: defaultName,
-                type: FileType.custom,
-                allowedExtensions: const ['csv'],
-                lockParentWindow: true,
-              );
-              // Cancel -> null -> surface snackbar below.
+            if (!context.mounted) return;
+            if (Platform.isAndroid) {
+              await _exportAndroidRecording(context, provider);
             }
-            // On Android we skip the dialog entirely → `picked == null`
-            // but we still start the recording (default dir path).
-            if (picked == null && Platform.isAndroid) {
-              await provider.startRecording();
-              return;
-            }
+            return;
+          }
+          // START ──────────────────────────────────────────────────────
+          // Desktop: pop native Save dialog FIRST, pick the destination
+          // path, then start the IOSink writing to that path.  This is
+          // the original Phase E flow — `file_picker.saveFile` on Linux
+          // / Windows returns a writable filesystem path.
+          //
+          // Android: SAF (Storage Access Framework) is one-shot
+          // bytes-only — `saveFile(bytes:)` writes the bytes upfront
+          // to a content:// URI; there is NO "open a writable stream"
+          // mode.  We cannot IOSink to a SAF URI.  So Android records
+          // in real-time to an app-private tmp file (path_provider
+          // application support dir) and pops the Save dialog on STOP
+          // instead — that way the user still chooses the final
+          // destination via the system file picker as the user
+          // requested.  See `Phase 4 fix: Android recording export via
+          // SAF` commit for the full rationale.
+          if (!Platform.isAndroid) {
+            final now = DateTime.now();
+            String p(int v) => v.toString().padLeft(2, '0');
+            final stamp =
+                '${now.year}${p(now.month)}${p(now.day)}_${p(now.hour)}${p(now.minute)}${p(now.second)}';
+            final defaultName = 'riden_recording_$stamp.csv';
+            final picked = await FilePicker.platform.saveFile(
+              dialogTitle: 'Save recording as…',
+              fileName: defaultName,
+              type: FileType.custom,
+              allowedExtensions: const ['csv'],
+              lockParentWindow: true,
+            );
             if (picked == null) {
               if (!context.mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -158,6 +162,9 @@ class _ToggleButton extends StatelessWidget {
               return;
             }
             await provider.startRecording(filePath: picked);
+          } else {
+            // Android — start immediately; Save dialog pops on STOP.
+            await provider.startRecording();
           }
         } catch (e) {
           if (!context.mounted) return;
@@ -194,6 +201,103 @@ class _ToggleButton extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Android-only export path invoked after [provider.stopRecording]
+  /// returns.  Reads the closed tmp CSV from the app-private cache
+  /// (DataLogger uses `path_provider` application support dir as the
+  /// default when called with no `filePath`) and pops the system file
+  /// picker via `FilePicker.saveFile(bytes:)` so the user can choose
+  /// the destination (Downloads / external storage / cloud Drive
+  /// etc.).  SAF writes the bytes there in one shot, then we delete
+  /// the tmp file.  Cancelling the dialog leaves the tmp file alone
+  /// (user can retry by re-starting STOP — no — actually the tmp
+  /// file stays put; OS will sweep app-private cache eventually) and
+  /// surfaces the cache path so the user knows where it lives.
+  ///
+  /// Filename is reused from [RecordingSession.startTime] so the
+  /// exported file matches the in-app tmp name.
+  Future<void> _exportAndroidRecording(
+    BuildContext context,
+    PowerSupplyProvider provider,
+  ) async {
+    final session = provider.recordingSession;
+    final tmpPath = session.filePath;
+    if (tmpPath == null) return;
+
+    final File tmpFile;
+    try {
+      tmpFile = File(tmpPath);
+      if (!tmpFile.existsSync()) return;
+    } catch (_) {
+      return;
+    }
+
+    Uint8List bytes;
+    try {
+      bytes = await tmpFile.readAsBytes();
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Failed to read recording: $e'),
+        backgroundColor: AppTheme.errorRed,
+        duration: const Duration(seconds: 3),
+      ));
+      return;
+    }
+
+    final startedAt = session.startTime ?? DateTime.now();
+    String pad(int v) => v.toString().padLeft(2, '0');
+    final name = 'riden_recording_'
+        '${startedAt.year}${pad(startedAt.month)}${pad(startedAt.day)}_'
+        '${pad(startedAt.hour)}${pad(startedAt.minute)}${pad(startedAt.second)}'
+        '.csv';
+
+    String? picked;
+    try {
+      picked = await FilePicker.platform.saveFile(
+        dialogTitle: 'Save recording as…',
+        fileName: name,
+        bytes: bytes,
+        type: FileType.custom,
+        allowedExtensions: const ['csv'],
+        lockParentWindow: true,
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Export failed: $e'),
+        backgroundColor: AppTheme.errorRed,
+        duration: const Duration(seconds: 3),
+      ));
+      return;
+    }
+
+    if (picked == null) {
+      // User cancelled the SAF picker — keep tmp file so the user can
+      // pull it via adb / file manager.  Surface the cache path.
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Recording kept in app cache:\n$tmpPath'),
+        backgroundColor: AppTheme.textDim,
+        duration: const Duration(seconds: 4),
+      ));
+      return;
+    }
+
+    // SAF has written `bytes` to `picked`.  Optionally delete the
+    // tmp file — silent if cleanup fails (OS sweeps app-private cache
+    // eventually).
+    try {
+      await tmpFile.delete();
+    } catch (_) {}
+
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Recording saved to:\n$picked'),
+      backgroundColor: AppTheme.voltGreen,
+      duration: const Duration(seconds: 4),
+    ));
   }
 }
 
