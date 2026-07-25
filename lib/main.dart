@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'providers/power_supply_provider.dart';
+import 'services/direct_android_modbus_service.dart';
+import 'services/modbus_service.dart';
 import 'services/serial_modbus_service.dart';
 
 Future<void> main() async {
@@ -50,10 +52,21 @@ Future<void> main() async {
     ));
   }
 
-  // Real Modbus RTU connection to the RIDEN power supply.  On Android
-  // the connection auto-resolves a CH340 via usb_serial instead of
-  // libserialport — see `serial_backend.dart::_AndroidUsbBackend`.
-  final modbusService = SerialModbusService();
+  // Real Modbus RTU connection to the RIDEN power supply.
+  //
+  // Phase 4 — Android path uses [DirectAndroidModbusService]:
+  // usb_serial platform channels can't route replies to a worker
+  // isolate (Flutter 3.44 BackgroundIsolateBinaryMessenger + usb_serial
+  // FATAL `did_send`); the async platform channel awaits don't block
+  // the UI isolate, so the worker-isolate invariant is not violated
+  // (the invariant targets synchronous FFI like libserialport, not
+  // async channels).
+  //
+  // Desktop path keeps [SerialModbusService] with worker isolate +
+  // libserialport FFI (as before).
+  final ModbusService modbusService = Platform.isAndroid
+      ? DirectAndroidModbusService()
+      : SerialModbusService();
 
   runApp(
     ChangeNotifierProvider(
