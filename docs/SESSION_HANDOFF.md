@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.4 已正式 Release (commit `d047ed2`, tag `v1.0.4`，双 CI 全绿，4 assets)，Phase D USB watcher + Phase E Measurement Recording 数据记录固化。Phase E 实现：每次波形刷新 (event-driven `record(snap)`) 写一行 CSV，START 按键弹原生 Save File dialog 由用户选位置 (`file_picker: ^8.1.0`)。下一阶段候选：Phase B.5 残留 audit / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码**。
+RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.4 已正式 Release (commit `d047ed2`, tag `v1.0.4`，双 CI 全绿，4 assets)，Phase D USB watcher + Phase E Measurement Recording 数据记录固化。Phase E 实现：每次波形刷新 (event-driven `record(snap)`) 写一行 CSV，START 按键弹原生 Save File dialog 由用户选位置 (`file_picker: ^8.1.0`)。下一阶段候选：**Phase 4 Android 平台移植** (spike PASS 2026-07-25 真机验证，完整设计见 `docs/PHASE_4_ANDROID.md`；`usb_serial ^0.5.2` + felHR85 driver + OTG + CH340，override 限 worker/enumerator+UI) / Phase B.5 残留 audit / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码**。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -1394,4 +1394,49 @@ Phase E **零通信层改动**：
 - **不记录 HR 地址 / 原始寄存器值** — 用户明确要求 Logger 只消费业务数据模型
 - **不在 disconnect 中清 logger session** — 用户可能 unplug+replug 中途录制，file 保持 open，reconnect 后继续写同一 session
 - **不实现 file picker 流程的 widget 测试** — `FilePicker.platform.saveFile` 在 flutter_test 环境无 platform channel 实现，弹真 GTK / Win32 dialog 需 host；DataLogger.start({filePath}) 路径已通过纯 Dart 测试覆盖（绕过 recordingDirFactory + 父目录递归创建）
+
+---
+
+# Phase 4 — Android Platform Migration (PLANNED, 未开始实施)
+
+**完整设计见 `docs/PHASE_4_ANDROID.md`**。此处仅记录 spike 验证结论与下一步入口。
+
+## Spike 验证 PASS (2026-07-25 真机)
+
+工程：`/tmp/opencode/usb_serial_spike` (Flutter 3.44.6 + `usb_serial: ^0.5.2` + AGP 9.0.1)
+
+| 验证项 | 结果 |
+|-------|------|
+| `UsbSerial.listDevices()` 枚举到 CH340 | ✓ `vid=0x1a86 pid=0x7523 product="USB Serial"` |
+| `device.create()` + `port.open()` + `setPortParameters(115200, 8, 1, NONE)` + `setDTR/RTS` | ✓ |
+| TX 8B `01 03 00 00 00 0A C5 CD` → RX 25B `01 03 14 <20B data> <CRC16>` | ✓ 完整 Modbus RTU 响应 ~60ms |
+| 两次读 HR0..9 数据微变化 (`00 50`↔`00 51`) | ✓ 设备真实在线 |
+
+**结论**: `usb_serial` 0.5.2 + CH340 + Android 11 真机可用，可进入 Phase 4 实施。
+
+## 实施入口（待用户授权开始）
+
+1. 加 Android 平台 scaffold (在 RIDEN 工程内 `flutter create --platforms=android .`)
+2. `pubspec.yaml` 加 `usb_serial: ^0.5.2`
+3. **pub-cache patch 一次性**：`~/.pub-cache/hosted/pub.dev/usb_serial-0.5.2/android/build.gradle` 三处改动（`jcenter()`→`mavenCentral()` / `compileSdkVersion 33`→`compileSdk 34` / 删 AGP 4.1 classpath）才能在 AGP 9 编译
+4. `AndroidManifest.xml` + `res/xml/device_filter.xml` USB host + CH340 VID/PID
+5. `android/app/build.gradle.kts` 显式 pin `compileSdk=34` / `buildToolsVersion="35.0.0"` / `minSdk=21` / `targetSdk=34`，删 `ndkVersion`
+6. **`lib/services/modbus_worker.dart` driver 层 override** — `Platform.isAndroid` 分支用 `usb_serial` API 替代 `SerialPort` FFI；`_accumulateRead` 250ms 不动
+7. **`lib/services/serial_port_enumerator.dart` override** — Android 入口用 `UsbSerial.listDevices()` + VID/PID 过滤
+8. `lib/main.dart` 平台守卫 + 横屏锁定
+9. `lib/app.dart` 触屏适配 (响应式 900px 已就绪 — 仅校验)
+10. (后续版本) CI workflow `release-android.yml`
+
+## 铁律 override 范围（用户 2026-07-25 决策）
+
+仅 `modbus_worker.dart` driver 层 + `serial_port_enumerator.dart` + `lib/main.dart` 平台守卫 + `lib/app.dart` UI 触屏适配。**始终保留**：ModbusScheduler / `modbus_task.dart` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / quickSwitch / 数据模型 / `RegisterDefinition` / `register_conflicts` / `modbus_service.dart` 抽象接口 / `serial_modbus_service.dart` / `mock_modbus_service.dart` / `serial_port_scanner.dart`。
+
+## 验收
+
+- `flutter analyze` 0 新增；`flutter test` 91 PASS 不得回归
+- 真机 V/A/W 波形 + quickSwitch M1↔M2 + USB watcher 拔插自连 + Recording CSV SAF 路径全验证
+
+## 发布计划
+
+v1.1.0 Android alpha (APK 自分发) → v1.1.1 fork `usb_serial` git dep → v1.2.0 `release-android.yml` CI → v2.0.0 Play Store (不在 Phase 4 范围)
 

@@ -154,9 +154,10 @@ static const _verboseLog = false; // set true for per-task debug logs
 
 ### 通用
 - 不主动提交 git，除非用户明确要求
-- 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 / Phase L1.2 章节）
+- 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 / Phase L1.2 / **Phase 4 Android** 章节）
 - 任何代码修改完成后必须运行 `fvm flutter analyze` 验证 0 新 issue
 - 不重新启用 `@Deprecated` 的 `loadSlot()` / `loadMemorySlot()` — HR19 quickSwitch 已硬件验证为设备唯一真实切换入口，旧路径软件模拟仅供回退测试保留
+- **Phase 4 Android 移植 override 仅限 `modbus_worker.dart` driver 层 / `serial_port_enumerator.dart` / `lib/main.dart` 平台守卫 / `lib/app.dart` UI 触屏适配**；其他铁律全部保留，详见 `docs/PHASE_4_ANDROID.md` §6
 
 ## 当前 Patch 状态
 
@@ -201,3 +202,12 @@ static const _verboseLog = false; // set true for per-task debug logs
   - **UI bug 修复** (v1.0.4 hot-fix)：`recording_panel.dart` 的 `color.withValues(alpha: 0x18)` 是误用 — Flutter 3.32+ 新 `Color.withValues({double? a})` 期望 0.0-1.0 浮点，传 `0x18` (=`24`) 被 clamp 到 `1.0` = 100% 不透明，绿/红实色盖住按钮文字 — 用户报告"记录卡牌上看不到字，要么全绿要么全红"。改用 codebase 一致的 `withAlpha(0x18)` (int 0..255 API)，与 `serial_panel.dart:332` 习惯对齐。
   - **已发布 v1.0.4**：commit `d047ed2` + tag `v1.0.4` + 双 CI 全绿 + 4 assets (AppImage + Windows ZIP + 2 SHA256SUMS)。Release notes 极简版（更新日志 + 校验命令 + 前置依赖）：https://github.com/beilusm/RIDEN/releases/tag/v1.0.4
   - **铁律保持**：不改 ModbusScheduler / ModbusWorker / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / quickSwitch / 数据模型 / 寄存器定义 / `serial_port_scanner.dart` / `serial_port_enumerator.dart` / `modbus_task.dart` / `modbus_service.dart` 抽象接口 / `serial_modbus_service.dart` / `mock_modbus_service.dart`。Phase E 全部在 UI isolate 新增模块 + provider 字段接入，零通信层改动。
+- **Phase 4 — Android 平台移植**：**PLANNED**（spike PASS 2026-07-25 真机验证，**未开始实施**；完整设计见 `docs/PHASE_4_ANDROID.md`）。`usb_serial ^0.5.2`（felHR85 Java driver，内置 Ch34xSerialDriver）替代 `flutter_libserialport` 在 Android 路径的角色 — spike 真机三项 PASS：(1) `UsbSerial.listDevices()` 枚举到 CH340 (vid=0x1a86 pid=0x7523 / product="USB Serial")；(2) `device.create()` + `port.open()` + `setPortParameters(115200, 8, 1, NONE)` + `setDTR/RTS` + `inputStream.listen` 全通；(3) TX 8B `01 03 00 00 00 0A C5 CD` → ~60ms 后 RX 25B 完整 Modbus RTU 响应（slave/FC/byteCount/20B data/CRC16），两次读 HR0..9 数据微变化证明设备真实在线。
+  - **铁律 override 范围（Phase 4 限）**：仅 `modbus_worker.dart` driver 层（connect/disconnect/read/write/enumerate `Platform.isAndroid` 分支）+ `serial_port_enumerator.dart`（`UsbSerial.listDevices()` Android 入口）+ `lib/main.dart` 平台守卫（`if (!Platform.isAndroid) windowManager.*`）+ `lib/app.dart` UI 触屏适配。其他铁律全部保留 — 不改 ModbusScheduler / `modbus_task.dart` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / quickSwitch / 数据模型 / `RegisterDefinition` / `register_conflicts` / `modbus_service.dart` 抽象接口 / `serial_modbus_service.dart` / `mock_modbus_service.dart` / `serial_port_scanner.dart`。
+  - **包选型**：`flutter_libserialport ^0.4.0` 在 Desktop 路径保留不动；`usb_serial ^0.5.2` 仅 Android 路径用。`modbus_client_serial_android` 拒绝（3 likes / 14 weekly / 同步 API 与架构铁律冲突）。`flutter_libserialport ^0.6.0` Android 路径拒绝（社区案例两极分化）。
+  - **pub-cache 前置 patch**：`~/.pub-cache/hosted/pub.dev/usb_serial-0.5.2/android/build.gradle` 必须 patch 三处（`jcenter()`→`mavenCentral()` / `compileSdkVersion 33`→`compileSdk 34` / 删 `classpath 'com.android.tools.build:gradle:4.1.0'`）才能在 AGP 9 + Gradle 9 下编译。v1.1 用 pub-cache patch 临时方案；v1.1.1+ fork 到 `github.com/beilusm/RIDEN-usb-serial-fork` 改 git dep，消除开发机手工步骤。
+  - **Android SDK 配置**：`android/app/build.gradle.kts` 必须显式 pin `compileSdk=34` / `buildToolsVersion="35.0.0"` / `minSdk=21` / `targetSdk=34`，删 `ndkVersion = flutter.ndkVersion`（usb_serial 是纯 Java 无 native build，不需要 NDK）。Flutter 3.44.6 默认 `compileSdk=36 / ndkVersion=28.2.13676358` 与多数 Android Studio 工具链不匹配。
+  - **AndroidManifest**：`<uses-feature android:name="android.hardware.usb.host"/>` + `<intent-filter USB_DEVICE_ATTACHED>` + `@xml/device_filter` 含 CH340 `vendor-id="6790" product-id="29723"`。
+  - **版本来源 S6**：新增 `packaging/config/env_android.sh` `APP_VERSION="1.1.0"`，纳入 4 处 env 一致性同步（S2 env.sh + S3 env_windows.sh + S6 env_android.sh 与 S1 pubspec）。
+  - **发布计划**：v1.1.0 Android alpha（APK 自分发，不上 CI） → v1.1.1 fork `usb_serial` git dep → v1.2.0 `release-android.yml` CI workflow → v2.0.0 Play Store（不在 Phase 4 范围）。
+  - **验收**：`flutter analyze` 0 新增；`flutter test` 91 PASS 不得回归；真机 V/A/W 波形显示 + quickSwitch M1↔M2 切换 + USB watcher 拔插自连 + Recording CSV 写入 SAF 路径全验证。
