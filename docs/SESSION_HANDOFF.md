@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 桌面上位机。当前阶段：**Post-Release 维护期 — v1.0.4 已正式 Release (commit `d047ed2`, tag `v1.0.4`，双 CI 全绿，4 assets)，Phase D USB watcher + Phase E Measurement Recording 数据记录固化。Phase E 实现：每次波形刷新 (event-driven `record(snap)`) 写一行 CSV，START 按键弹原生 Save File dialog 由用户选位置 (`file_picker: ^8.1.0`)。下一阶段候选：**Phase 4 Android 平台移植** (spike PASS 2026-07-25 真机验证，完整设计见 `docs/PHASE_4_ANDROID.md`；`usb_serial ^0.5.2` + felHR85 driver + OTG + CH340，override 限 worker/enumerator+UI) / Phase B.5 残留 audit / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码**。
+RIDEN 数控电源 Flutter 上位机（Linux + Windows + Android）。当前阶段：**v1.1.0 已正式 Release — Phase 4 Android 平台移植完成 (commits `e51428c` → `1ce417c` → `b4b97e5` → `f56df04` → `14b01c0`)，真机 PASS 2026-07-25 (V/A/W 波形 + quickSwitch M2 + USB watcher 拔插自连 + Recording CSV STOP 弹系统文件选择器选保存位置)**。后续阶段候选：Phase 4.1 Android share/export 二次入口 / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码 / setOVP/OCP 写入路径 active slot 数据源修复。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -1397,9 +1397,9 @@ Phase E **零通信层改动**：
 
 ---
 
-# Phase 4 — Android Platform Migration (PLANNED, 未开始实施)
+# Phase 4 — Android Platform Migration (APPLIED, v1.1.0 released 2026-07-25)
 
-**完整设计见 `docs/PHASE_4_ANDROID.md`**。此处仅记录 spike 验证结论与下一步入口。
+**完整设计见 `docs/PHASE_4_ANDROID.md`**。此处记录实施结果与后续 fix。
 
 ## Spike 验证 PASS (2026-07-25 真机)
 
@@ -1412,31 +1412,84 @@ Phase E **零通信层改动**：
 | TX 8B `01 03 00 00 00 0A C5 CD` → RX 25B `01 03 14 <20B data> <CRC16>` | ✓ 完整 Modbus RTU 响应 ~60ms |
 | 两次读 HR0..9 数据微变化 (`00 50`↔`00 51`) | ✓ 设备真实在线 |
 
-**结论**: `usb_serial` 0.5.2 + CH340 + Android 11 真机可用，可进入 Phase 4 实施。
+## 实施提交链（v1.1.0）
 
-## 实施入口（待用户授权开始）
+| Commit | 内容 |
+|--------|------|
+| `db0c67a` | Phase 4 设计文档固化 (docs/PHASE_4_ANDROID.md + CLAUDE.md + SESSION_HANDOFF.md) |
+| `e51428c` | Phase 4 Android: usb_serial backend + CI workflows (v1.1.0) — `serial_backend.dart` + `modbus_worker` 改造 + `serial_port_enumerator` Android 分支 + `main.dart` 平台守卫 + Android 工程 scaffold + AndroidManifest + device_filter + build.gradle.kts + env_android.sh + pubspec 1.1.0 + .gitignore android + 两个 CI workflows |
+| `46228f0` | 抽取 `packaging/scripts/patch_pub_cache_android.sh` (4 处 pub-cache patch 一键脚本) |
+| `12a1dff` | CI: usb_serial 0.5.2 build.gradle patch (CI fresh pub-cache) |
+| `eee9528` | CI: deep-link tag release notes |
+| `1ce417c` | bugfix: orientation portrait + edge-to-edge transparent status bar + Android scanner bypass Isolate.run + device_filter PID correction (29723 → 29987 = 0x7523 decimal) |
+| `b4b97e5` | **`DirectAndroidModbusService`** — UI-isolate-only usb_serial。解决 Flutter 3.44 `BackgroundIsolateBinaryMessenger` 无法在 worker isolate 跑 usb_serial 的 MethodChannel + EventChannel reply（`platform_message_response_dart_port.cc:53 Check failed: did_send` FATAL abort）。真机 PASS：不崩 / scheduler polling / quickSwitch / URB 持续。 |
+| `f56df04` | bugfix: Android recording path + immersive status bar — `SystemUiMode.edgeToEdge` 改 `immersiveSticky` (状态栏彻底隐藏，边缘向内滑临时唤出)；Recording Android 路径用 path_provider app-private dir (Phase 4 第一版 Android recording 方案，后改为 §14 SAF export) |
+| `14b01c0` | **bugfix: Android recording export via SAF file picker** — 用户需求"必须用 file_picker 弹系统文件选择器选保存位置"。Android 流程改为：START 写 app-private tmp (path_provider) → STOP flush+close → 读 bytes → `FilePicker.saveFile(bytes:)` 弹 SAF 选保存位置 → 落盘 → 删 tmp。Desktop 路径保持原 Save dialog 先行不变。真机 PASS：用户验证 STOP 弹系统文件选择器，选完位置文件落盘正确。 |
 
-1. 加 Android 平台 scaffold (在 RIDEN 工程内 `flutter create --platforms=android .`)
-2. `pubspec.yaml` 加 `usb_serial: ^0.5.2`
-3. **pub-cache patch 一次性**：`~/.pub-cache/hosted/pub.dev/usb_serial-0.5.2/android/build.gradle` 三处改动（`jcenter()`→`mavenCentral()` / `compileSdkVersion 33`→`compileSdk 34` / 删 AGP 4.1 classpath）才能在 AGP 9 编译
-4. `AndroidManifest.xml` + `res/xml/device_filter.xml` USB host + CH340 VID/PID
-5. `android/app/build.gradle.kts` 显式 pin `compileSdk=34` / `buildToolsVersion="35.0.0"` / `minSdk=21` / `targetSdk=34`，删 `ndkVersion`
-6. **`lib/services/modbus_worker.dart` driver 层 override** — `Platform.isAndroid` 分支用 `usb_serial` API 替代 `SerialPort` FFI；`_accumulateRead` 250ms 不动
-7. **`lib/services/serial_port_enumerator.dart` override** — Android 入口用 `UsbSerial.listDevices()` + VID/PID 过滤
-8. `lib/main.dart` 平台守卫 + 横屏锁定
-9. `lib/app.dart` 触屏适配 (响应式 900px 已就绪 — 仅校验)
-10. (后续版本) CI workflow `release-android.yml`
+## 关键设计决策（实施版）
 
-## 铁律 override 范围（用户 2026-07-25 决策）
+### DirectAndroidModbusService — UI-isolate-only（commit `b4b97e5`）
 
-仅 `modbus_worker.dart` driver 层 + `serial_port_enumerator.dart` + `lib/main.dart` 平台守卫 + `lib/app.dart` UI 触屏适配。**始终保留**：ModbusScheduler / `modbus_task.dart` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / quickSwitch / 数据模型 / `RegisterDefinition` / `register_conflicts` / `modbus_service.dart` 抽象接口 / `serial_modbus_service.dart` / `mock_modbus_service.dart` / `serial_port_scanner.dart`。
+Flutter 3.44 `BackgroundIsolateBinaryMessenger` 无法在 worker isolate 跑 usb_serial 的 MethodChannel + EventChannel reply — `platform_message_response_dart_port.cc:53 Check failed: did_send` FATAL abort。故 Android 不用 worker isolate，改用 `DirectAndroidModbusService` 在 UI isolate 直接跑 usb_serial（platform channel async 非 blocking，不违反"UI 不直接访问 SerialPort"铁律本意，该铁律针对同步 FFI 如 libserialport）。复用 `ModbusScheduler` / `_accumulateRead` / frame builder / CRC16 1:1。
 
-## 验收
+**新增模块**：
+- `lib/services/serial_backend.dart` — `SerialBackend` 抽象 + `_LibserialportBackend` (Desktop) + `_AndroidUsbBackend` (Android usb_serial Stream)
+- `lib/services/direct_android_modbus_service.dart` — Android UI-isolate-only ModbusService 实现
 
-- `flutter analyze` 0 新增；`flutter test` 91 PASS 不得回归
-- 真机 V/A/W 波形 + quickSwitch M1↔M2 + USB watcher 拔插自连 + Recording CSV SAF 路径全验证
+### Recording CSV Android 路径 — SAF export（commit `14b01c0`）
 
-## 发布计划
+Android SAF (Storage Access Framework) 是 one-shot bytes-only — `FilePicker.saveFile(bytes:)` 写 bytes 到 content:// URI，无"open writable stream"模式，不支持 IOSink 流式写入。故 Android 流程改为：
 
-v1.1.0 Android alpha (APK 自分发) → v1.1.1 fork `usb_serial` git dep → v1.2.0 `release-android.yml` CI → v2.0.0 Play Store (不在 Phase 4 范围)
+1. START 立即开始写 app 私有 tmp 文件（path_provider application support dir，与 Desktop 等价的 default dir 路径）
+2. 录制期间 IOSink 流式追加 CSV 行（与 Desktop 完全一致）
+3. STOP：flush + close → 读 tmp 文件 bytes → `FilePicker.saveFile(bytes:)` 弹系统文件选择器
+4. 用户选保存位置 → SAF 落盘 → 删除 tmp 文件 + SnackBar 提示成功路径
+5. Cancel：保留 tmp 文件（OS 最终会扫 app-private cache 清理）+ SnackBar 提示 tmp 路径供 adb pull
+
+Desktop 路径保持 Phase E 原行为：START 前弹原生 Save dialog 选 path → IOSink 增量写入。
+
+### 铁律 override 范围（实施版，超出设计版）
+
+- `lib/services/serial_backend.dart` (新) — `SerialBackend` 抽象 + `_LibserialportBackend` (Desktop) + `_AndroidUsbBackend` (Android usb_serial Stream)
+- `lib/services/direct_android_modbus_service.dart` (新) — Android UI-isolate-only ModbusService 实现，复用 `ModbusScheduler` / `_accumulateRead` / frame builder / CRC16 1:1
+- `lib/services/modbus_worker.dart` — 只在 Desktop 路径使用（Android 不 spawn worker）
+- `lib/services/serial_port_enumerator.dart` — Android 路径绕过 `Isolate.run`，直接 await `usb_serial.listDevices()`
+- `lib/main.dart` — `Platform.isAndroid` 守卫选 `DirectAndroidModbusService` vs `SerialModbusService` + `SystemUiMode.immersiveSticky`
+- `lib/widgets/recording_panel.dart` — Android STOP 路径加 `_exportAndroidRecording` (SAF bytes export)
+- **保留**: ModbusScheduler / modbus_task.dart / modbus_service.dart 接口 / serial_modbus_service.dart / mock_modbus_service.dart / serial_port_scanner.dart / RegisterDefinition / quickSwitch / _accumulateRead 250ms / FAST 150ms / SLOW 1000ms
+
+### pub-cache patches (4 处)
+
+统一在 `packaging/scripts/patch_pub_cache_android.sh`，CI 和本地都调用：
+1. `usb_serial-0.5.2/android/build.gradle` — 删 `jcenter()` + AGP 4.1 classpath
+2. `flutter_libserialport-0.4.0/android/build.gradle` — 删 jcenter + AGP 4.1 + CMake native + sourceSets 全空 + JVM 17
+3. `flutter_libserialport-0.4.0/android/.../FlutterLibserialportPlugin.kt` — v2 embedding stub (删 v1 Registrar 引用)
+4. `file_picker-8.3.7/android/build.gradle` — 删 AGP 7.4.2 classpath + compileSdk 跟随 rootProject (36)
+
+### Android SDK 配置
+
+`android/app/build.gradle.kts` `compileSdk = flutter.compileSdkVersion` (不硬 pin，Flutter 3.44.6 默认 36 满足传递依赖) / `minSdk = 21` / `targetSdk = 34`。本机 SDK 路径 `~/Android/Sdk`（不是 `/opt/android-sdk`），需 `export ANDROID_HOME=$HOME/Android/Sdk`。
+
+### 版本来源 S6
+
+新增 `packaging/config/env_android.sh` `APP_VERSION="1.1.0"`，纳入 4 处 env 一致性同步（S2 env.sh + S3 env_windows.sh + S6 env_android.sh 与 S1 pubspec）。
+
+### CI workflows
+
+- `release-android.yml` (tag 触发 + GitHub Release 上传 APK + SHA256SUMS-android.txt)
+- `android-build.yml` (push 触发 dev CI, 4m39s PASS)
+
+## 验收（真机 2026-07-25）
+
+- `flutter analyze` 21 issues / 0 新增；`flutter test` 91 PASS / 0 回归
+- 真机 V/A/W 波形显示 + quickSwitch M2 切换 + USB watcher 拔插自连 + Recording CSV STOP 弹系统文件选择器选保存位置全验证 PASS
+
+## 后续阶段候选
+
+- **Phase 4.1** — Android share/export 二次入口：录制完成后加 "Share / Open with CSV viewer" 按钮，调用 `share_intent` 或 ACTION_VIEW 让用户直接打开文件管理器 / Sheets 等工具
+- **v1.1.1** fork `usb_serial` git dep，消除 pub-cache patch 手工步骤
+- **quickSwitch 延迟优化**
+- **P1-1 `_onPollMiss` 死代码** (仍 OPEN)
+- **setOVP/OCP 写入路径 active slot 数据源修复** (需 datasheet 硬件验证)
+
 

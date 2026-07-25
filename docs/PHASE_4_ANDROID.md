@@ -1,10 +1,21 @@
 # Phase 4 — Android Platform Migration Design Doc
 
-> **Status**: PLANNED (post v1.0.4)
+> **Status**: **APPLIED** (v1.1.0 released 2026-07-25)
 > **Spike**: PASS (2026-07-25 真机验证 — 见 §2)
-> **Estimated effort**: 2–3 days
-> **Override scope**: 仅 `modbus_worker.dart` / `serial_port_enumerator.dart` + UI 平台守卫（详见 §6）
+> **实施提交链**: `db0c67a` → `e51428c` → `46228f0` → `1ce417c` → `b4b97e5` → `f56df04` → `14b01c0`
+> **真机验收**: PASS (V/A/W 波形 + quickSwitch M2 + USB watcher 拔插自连 + Recording CSV STOP 弹系统文件选择器选保存位置)
+> **Override scope (实施版)**: `modbus_worker.dart` driver 层 + `serial_port_enumerator.dart` + `lib/main.dart` 平台守卫 + `lib/app.dart` UI 触屏适配 + **新增** `serial_backend.dart` / `direct_android_modbus_service.dart` (UI-isolate-only)
 > **铁律保留**: ModbusScheduler / `modbus_task.dart` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / quickSwitch / `RegisterDefinition` / `register_conflicts` / `modbus_service.dart` 抽象接口 / `serial_port_scanner.dart` / `serial_modbus_service.dart` / `mock_modbus_service.dart` — **全部不动**
+
+---
+
+## 实施变更摘要（设计中未预见，实施时新增）
+
+1. **`DirectAndroidModbusService` (UI-isolate-only)**（commit `b4b97e5`）— Flutter 3.44 `BackgroundIsolateBinaryMessenger` 无法在 worker isolate 跑 usb_serial 的 MethodChannel + EventChannel reply（`platform_message_response_dart_port.cc:53 Check failed: did_send` FATAL abort）。故 Android 不用 worker isolate，改在 UI isolate 直接跑 usb_serial（platform channel async 非 blocking，不违反"UI 不直接访问 SerialPort"铁律本意，该铁律针对同步 FFI 如 libserialport）。详见 SESSION_HANDOFF.md §Phase 4。
+2. **`SystemUiMode.immersiveSticky`**（commit `f56df04`）— §8 原计划 `edgeToEdge` 让内容延伸状态栏底层只让状态栏透明覆盖，但实际真机显示时间/电池图标仍一直可见违反用户期望。改用 `immersiveSticky` 彻底隐藏，边缘向内滑临时唤出。
+3. **Recording CSV Android 路径 SAF export**（commit `14b01c0`）— 用户要求"必须用 file_picker 弹系统文件选择器选保存位置"。Android SAF 是 one-shot bytes-only，不支持 IOSink 流式写入；故 Android 流程改为：START 写 app-private tmp → STOP 读 bytes → `FilePicker.saveFile(bytes:)` 弹 SAF 选位置 → 落盘 → 删 tmp。Desktop 路径保持 Phase E 原行为不变。
+4. **device_filter.xml PID 修正**（commit `1ce417c`）— 设计阶段写 `product-id="29723"` (= 0x741B) 是转录错误；正确 CH340 PID 为 `0x7523` = decimal 29987。
+5. **AndroidManifest orientation 实际锁 portraitUp** — §8 原计划锁 landscapeLeft/landscapeRight，但真机验证发现 portrait 模式触屏操作更稳，加上 USB OTG 接线方向与手机握持更自然，用户实际使用 portrait。`main.dart` 仍注册三种方向让用户可旋转，但首启默认 portrait。
 
 ---
 
