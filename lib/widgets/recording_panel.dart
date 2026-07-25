@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -112,30 +113,41 @@ class _ToggleButton extends StatelessWidget {
           if (recording) {
             await provider.stopRecording();
           } else {
-            // Pop the host's native Save File dialog BEFORE starting the
-            // recording.  The user picks the destination path every
-            // session — no implicit timestamped file under the
-            // platform's application support directory.  cancellable:
-            // pressing Cancel / closing the dialog returns null and we
-            // surface that as a transient SnackBar instead of starting
-            // a recording into a guessed path (would violate the
-            // user's "用户选择记录文件存放位置" requirement).
+            // Phase 4 Android — `file_picker`'s `saveFile` on Android
+            // uses SAF (Storage Access Framework) which REQUIRES the
+            // caller to supply the file `bytes` upfront — there is no
+            // "open a writable stream to this URI" mechanism. That
+            // fits one-shot export, NOT continuous recording where the
+            // IOSink writes incrementally as the FAST poll ticks.
             //
-            // Default name: riden_recording_<yyyyMMdd_HHmmss>.csv — the
-            // logger's fallback name, so a user who just clicks Save
-            // gets the same canonical timestamped file as before.
-            final now = DateTime.now();
-            String p(int v) => v.toString().padLeft(2, '0');
-            final stamp =
-                '${now.year}${p(now.month)}${p(now.day)}_${p(now.hour)}${p(now.minute)}${p(now.second)}';
-            final defaultName = 'riden_recording_$stamp.csv';
-            final picked = await FilePicker.platform.saveFile(
-              dialogTitle: 'Save recording as…',
-              fileName: defaultName,
-              type: FileType.custom,
-              allowedExtensions: const ['csv'],
-              lockParentWindow: true,
-            );
+            // Android path therefore bypasses the dialog and lets the
+            // DataLogger default-dir factory pick `path_provider`'s
+            // app-private storage (<app_support>/recordings/). The user
+            // can later pull the file via adb / file manager / share
+            // intent (Phase 4.1 will add a "Share / Export" button).
+            // Desktop path keeps the native Save dialog as before.
+            String? picked;
+            if (!Platform.isAndroid) {
+              final now = DateTime.now();
+              String p(int v) => v.toString().padLeft(2, '0');
+              final stamp =
+                  '${now.year}${p(now.month)}${p(now.day)}_${p(now.hour)}${p(now.minute)}${p(now.second)}';
+              final defaultName = 'riden_recording_$stamp.csv';
+              picked = await FilePicker.platform.saveFile(
+                dialogTitle: 'Save recording as…',
+                fileName: defaultName,
+                type: FileType.custom,
+                allowedExtensions: const ['csv'],
+                lockParentWindow: true,
+              );
+              // Cancel -> null -> surface snackbar below.
+            }
+            // On Android we skip the dialog entirely → `picked == null`
+            // but we still start the recording (default dir path).
+            if (picked == null && Platform.isAndroid) {
+              await provider.startRecording();
+              return;
+            }
             if (picked == null) {
               if (!context.mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

@@ -37,13 +37,15 @@ Future<void> main() async {
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
-    // 让内容延伸到状态栏 / 导航栏底层，应用占全屏；状态栏图标透明覆盖
-    // 在 chart 上方，Scaffold + SafeArea 自动避开 occlusion。
+    // Phase 4 fix — 用户期望状态栏彻底隐藏（沉浸模式），不是
+    // edgeToEdge 的透明覆盖。`immersiveSticky` 让状态栏 / 导航栏
+    // 默认隐藏；用户从屏幕边缘向内滑会临时显示（"sticky" 部分），
+    // 短暂停留后再次自动隐藏。
+    // 之前的 edgeToEdge 模式只让状态栏透明覆盖在 chart 上，状态栏
+    // 图标（时间 / 电池）仍然一直可见，违反用户期望。
     await SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.edgeToEdge,
-      overlays: SystemUiOverlay.values,
+      SystemUiMode.immersiveSticky,
     );
-    // 透明 status bar / navigation bar，让 Chart 渐变 / 背景色渗透：
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
