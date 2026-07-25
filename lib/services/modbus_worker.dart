@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
-import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'package:flutter/services.dart' show RootIsolateToken;
 import '../models/power_supply_data.dart';
 import 'modbus_scheduler.dart';
 import 'modbus_task.dart';
+import 'serial_backend.dart';
 
 /// Thrown by [ModbusWorkerHandle] when the worker isolate exits
 /// unexpectedly (crash, uncaught error, or handshake failure) while
@@ -23,7 +24,16 @@ class _WorkerCrashedException implements Exception {
 
 /// ── Worker entry point (runs in Modbus isolate) ──────────────
 
-void _workerEntry(SendPort uiSendPort) {
+void _workerEntry(List<dynamic> args) {
+  final SendPort uiSendPort = args[0] as SendPort;
+  final RootIsolateToken? rootToken =
+      args[1] as RootIsolateToken?;
+  // Phase 4 — Android usb_serial uses MethodChannel/EventChannel; the
+  // worker isolate needs `BackgroundIsolateBinaryMessenger` wired up
+  // with the UI isolate's RootIsolateToken before any platform call.
+  // On Desktop (libserialport FFI) this is a harmless no-op.
+  initWorkerBackgroundChannel(rootToken);
+
   final receiver = ReceivePort();
   uiSendPort.send(receiver.sendPort); // handshake: send our port back
 
@@ -39,7 +49,7 @@ class _ModbusWorkerCore {
   final SendPort _uiPort;
   final ModbusScheduler _scheduler = ModbusScheduler();
 
-  SerialPort? _port;
+  SerialBackend? _backend;
   Timer? _fastTimer;
   Timer? _slowTimer;
   int _slowSlotIdx = 0;
@@ -65,7 +75,7 @@ class _ModbusWorkerCore {
             msg['baudRate'] as int?, msg['addr'] as int?);
         break;
       case 'list_ports':
-        _reply(id, 'result', SerialPort.availablePorts);
+        _replyAsyncListPorts(id);
         break;
       case 'disconnect':
         _disconnect(id);
@@ -158,48 +168,39 @@ class _ModbusWorkerCore {
 
   // ── Port detection ──────────────────────────────────────────
 
-  static String _detectPort() {
-    for (final p in SerialPort.availablePorts) {
-      final lower = p.toLowerCase();
-      // Linux: /dev/ttyUSB* or /dev/ttyACM*
-      // macOS: /dev/cu.usbserial* or /dev/cu.usbmodem*
-      // Windows: COM*
-      if (lower.contains('ttyusb') ||
-          lower.contains('ttyacm') ||
-          lower.contains('usbserial') ||
-          lower.contains('usbmodem') ||
-          lower.contains('cuserial') ||
-          lower.startsWith('com')) {
-        return p;
-      }
+  // Phase 4 — port detection is delegated to the SerialBackend's
+  // open() (Desktop: libserialport name match; Android: CH340 VID/PID
+  // probe).  No more static SerialPort.availablePorts here.  The
+  // explicit-port path passes the user's choice through to
+  // `_backend.open(portName: ...)`; the auto-detect path passes null
+  // and lets the backend pick.
+
+  Future<void> _replyAsyncListPorts(int id) async {
+    try {
+      // Use a transient backend when none is connected yet — the
+      // transient backend is created, enumerated, then disposed so we
+      // don't leak a SerialPort handle / UsbDevice permission.
+      final backend = _backend ?? createBackend();
+      final ports = await backend.enumeratePortNames();
+      if (_backend == null) backend.dispose();
+      _reply(id, 'result', ports);
+    } catch (e) {
+      _replyError(id, 'list_ports error: $e');
     }
-    final ports = SerialPort.availablePorts;
-    if (ports.isNotEmpty) return ports.first;
-    throw Exception('No serial port found. Connect RIDEN via CH340 USB.');
   }
 
   // ── Connect / Disconnect ──────────────────────────────────────
 
-  void _connect(int id, String? portName, int? baudRate, int? addr) {
+  Future<void> _connect(int id, String? portName, int? baudRate, int? addr) async {
     try {
       _addr = (addr == null || addr <= 0 || addr > 247) ? 0x01 : addr;
       _baudRate = (baudRate == null || baudRate <= 0) ? 115200 : baudRate;
-      portName ??= _detectPort();
-      _port = SerialPort(portName);
-      if (!_port!.openReadWrite()) {
-        final err = SerialPort.lastError;
-        _port!.dispose();
-        _port = null;
-        _replyError(id, 'Failed to open $portName: ${err?.message ?? "unknown"}');
-        return;
-      }
-      final cfg = _port!.config;
-      cfg.baudRate = _baudRate;
-      cfg.bits = 8;
-      cfg.parity = SerialPortParity.none;
-      cfg.stopBits = 1;
-      cfg.setFlowControl(SerialPortFlowControl.none);
-      _port!.config = cfg;
+      // Dispose any stale backend from a prior session (e.g. worker
+      // crashed mid-poll and the handle was reconnected without a
+      // graceful disconnect).
+      _backend?.dispose();
+      _backend = createBackend();
+      await _backend!.open(portName: portName, baudRate: _baudRate);
 
       _reply(id, 'result', true);
       _resumeTieredPolling();
@@ -230,24 +231,22 @@ class _ModbusWorkerCore {
     }
   }
 
-  void _disconnect(int id) {
+  Future<void> _disconnect(int id) async {
     _pauseTieredPolling();
-    _scheduler.shutdown().then((_) {
-      _port?.close();
-      _port?.dispose();
-      _port = null;
-      _reply(id, 'result', true);
-    });
+    await _scheduler.shutdown();
+    await _backend?.close();
+    _backend?.dispose();
+    _backend = null;
+    _reply(id, 'result', true);
   }
 
-  void _shutdown(int id) {
+  Future<void> _shutdown(int id) async {
     _pauseTieredPolling();
-    _scheduler.shutdown().then((_) {
-      _port?.close();
-      _port?.dispose();
-      _port = null;
-      _reply(id, 'result', true);
-    });
+    await _scheduler.shutdown();
+    await _backend?.close();
+    _backend?.dispose();
+    _backend = null;
+    _reply(id, 'result', true);
   }
 
   // ── Poll control ──────────────────────────────────────────────
@@ -274,7 +273,7 @@ class _ModbusWorkerCore {
   // ── FAST poll ─────────────────────────────────────────────────
 
   void _fastPoll() {
-    if (_port == null || !_port!.isOpen) return;
+    if (_backend == null || !_backend!.isOpen) return;
     _enqueueReadDirect(_kFastReadStart, _kFastReadCount,
         TaskPriority.fastPoll, 'fast',
         group: 'poll',
@@ -310,7 +309,7 @@ class _ModbusWorkerCore {
   // ── SLOW poll ─────────────────────────────────────────────────
 
   void _slowPoll() {
-    if (_port == null || !_port!.isOpen) return;
+    if (_backend == null || !_backend!.isOpen) return;
     for (int s = _slowSlotIdx; s < _slowSlotIdx + 2 && s < 10; s++) {
       final idx = s;
       _enqueueReadDirect(80 + idx * 4, 4, TaskPriority.slowPoll, 'slot_M$idx',
@@ -369,8 +368,8 @@ class _ModbusWorkerCore {
       execute: () async {
         final frame = _buildWriteFrame(addr, value);
         for (int attempt = 1; attempt <= 2; attempt++) {
-          _requirePort.write(frame);
-          final resp = _accumulateRead(8, 250);
+          await _requireBackend.write(frame);
+          final resp = await _accumulateRead(8, 250);
           if (resp.length >= 8 && resp[1] == 0x06) {
             return;
           }
@@ -411,12 +410,12 @@ class _ModbusWorkerCore {
           : null,
       execute: () async {
         final frame = _buildReadFrame(start, count);
-        _requirePort.write(frame);
-        final resp = _accumulateRead(expectedLen, 250);
+        await _requireBackend.write(frame);
+        final resp = await _accumulateRead(expectedLen, 250);
 
         // Drain on timeout
         if (resp.length < expectedLen) {
-          _drainPort(80);
+          await _drainPort(80);
           return null;
         }
 
@@ -443,14 +442,15 @@ class _ModbusWorkerCore {
 
   // ── I/O helpers ───────────────────────────────────────────────
 
-  SerialPort get _requirePort {
-    if (_port == null || !_port!.isOpen) {
-      throw StateError('Serial port not available');
+  SerialBackend get _requireBackend {
+    final b = _backend;
+    if (b == null || !b.isOpen) {
+      throw StateError('Serial backend not available');
     }
-    return _port!;
+    return b;
   }
 
-  Uint8List _accumulateRead(int expectedLen, int overallDeadlineMs) {
+  Future<Uint8List> _accumulateRead(int expectedLen, int overallDeadlineMs) async {
     final sw = Stopwatch()..start();
     Uint8List buf = Uint8List(0);
     int attempt = 0;
@@ -460,7 +460,8 @@ class _ModbusWorkerCore {
       attempt++;
       final remaining = overallDeadlineMs - sw.elapsedMilliseconds;
       final timeout = attempt == 1 ? 80 : (remaining < 30 ? remaining : 30);
-      final chunk = _requirePort.read(need, timeout: timeout);
+      final chunk = await _requireBackend
+          .readChunk(need, Duration(milliseconds: timeout));
       if (chunk.isNotEmpty) {
         final merged = Uint8List(buf.length + chunk.length);
         merged.setAll(0, buf);
@@ -471,11 +472,13 @@ class _ModbusWorkerCore {
     return buf;
   }
 
-  int _drainPort(int deadlineMs) {
+  Future<int> _drainPort(int deadlineMs) async {
     final sw = Stopwatch()..start();
     int total = 0;
     while (sw.elapsedMilliseconds < deadlineMs) {
-      final chunk = _requirePort.read(256, timeout: 20);
+      final backend = _backend;
+      if (backend == null || !backend.isOpen) break;
+      final chunk = await backend.readChunk(256, const Duration(milliseconds: 20));
       if (chunk.isEmpty) break;
       total += chunk.length;
     }
@@ -592,9 +595,15 @@ class ModbusWorkerHandle {
 
     Isolate? isolate;
     try {
+      // Phase 4 — pass the UI isolate's RootIsolateToken to the worker
+      // so usb_serial platform channels (Android) can route from the
+      // worker isolate.  `RootIsolateToken.instance` is non-null once
+      // Flutter engine is attached; on Desktop the token is captured
+      // but `initWorkerBackgroundChannel` is a harmless no-op there.
+      final rootToken = RootIsolateToken.instance;
       isolate = await Isolate.spawn(
         _workerEntry,
-        uiPort.sendPort,
+        [uiPort.sendPort, rootToken],
         onExit: uiPort.sendPort,
         onError: uiPort.sendPort,
       );

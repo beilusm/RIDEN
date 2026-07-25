@@ -1,0 +1,169 @@
+name: Android Build
+
+# Dev CI for Android：构建 verify + 不发布。
+# 触发：push 到 main 且涉及 Android 构建相关文件；manual workflow_dispatch。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.fvmrc'
+      - '.github/workflows/android-build.yml'
+  workflow_dispatch:
+
+# 取消同分支上重复运行，省 runner minutes。
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.44.6'
+  CI: true
+
+jobs:
+  build:
+    name: Android arm64-v8a Debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Apply pub-cache patches for AGP 9 / Gradle 9 compatibility
+        shell: bash
+        run: |
+          # Phase 4 §7 — 同 release-android.yml 的 patch 步骤一致。
+          set -e
+
+          cat > "$HOME/.pub-cache/hosted/pub.dev/flutter_libserialport-0.4.0/android/build.gradle" <<'PATCH'
+          group 'org.sigrok.flutter_libserialport'
+          version '1.0-SNAPSHOT'
+
+          buildscript {
+              repositories { google(); mavenCentral() }
+          }
+
+          rootProject.allprojects {
+              repositories { google(); mavenCentral() }
+          }
+
+          apply plugin: 'com.android.library'
+
+          android {
+              namespace 'org.sigrok.flutter_libserialport'
+              final def rootProjectCompileSdk = rootProject.ext.has("compileSdkVersion")
+                  ? rootProject.ext.get("compileSdkVersion") : 34
+              compileSdk rootProjectCompileSdk
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              defaultConfig { minSdk 21 }
+              lintOptions { disable 'InvalidPackage' }
+
+              sourceSets {
+                  main {
+                      java.srcDirs = []
+                      kotlin.srcDirs = []
+                      res.srcDirs = []
+                      assets.srcDirs = []
+                  }
+              }
+          }
+
+          kotlin {
+              compilerOptions {
+                  jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+              }
+          }
+
+          dependencies {}
+          PATCH
+
+          cat > "$HOME/.pub-cache/hosted/pub.dev/flutter_libserialport-0.4.0/android/src/main/kotlin/org/sigrok/flutter_libserialport/FlutterLibserialportPlugin.kt" <<'PATCH'
+          package org.sigrok.flutter_libserialport
+
+          import io.flutter.embedding.engine.plugins.FlutterPlugin
+
+          class FlutterLibserialportPlugin : FlutterPlugin {
+              override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
+              override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
+          }
+          PATCH
+
+          cat > "$HOME/.pub-cache/hosted/pub.dev/file_picker-8.3.7/android/build.gradle" <<'PATCH'
+          group 'com.mr.flutter.plugin.filepicker'
+          version '1.0-SNAPSHOT'
+
+          buildscript {
+              repositories { google(); mavenCentral() }
+          }
+
+          rootProject.allprojects {
+              repositories { google(); mavenCentral() }
+          }
+
+          apply plugin: 'com.android.library'
+
+          android {
+              final def rootProjectCompileSdk = rootProject.ext.has("compileSdkVersion")
+                  ? rootProject.ext.get("compileSdkVersion") : 36
+              compileSdk rootProjectCompileSdk
+
+              defaultConfig {
+                  minSdk 21
+                  testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+              }
+              lintOptions { disable 'InvalidPackage' }
+
+              dependencies {
+                  implementation 'androidx.core:core:1.0.2'
+                  implementation 'androidx.annotation:annotation:1.0.0'
+                  implementation "androidx.lifecycle:lifecycle-runtime:2.1.0"
+              }
+
+              if (project.android.hasProperty("namespace")) {
+                  namespace 'com.mr.flutter.plugin.filepicker'
+              }
+          }
+          PATCH
+
+          echo "=== pub-cache patches applied ==="
+
+      - name: Flutter analyze (no new issues)
+        run: flutter analyze
+
+      - name: Flutter test
+        run: flutter test
+
+      - name: Build Android Debug APK (arm64-v8a)
+        run: |
+          flutter build apk --debug --target-platform android-arm64
+          ls -lh build/app/outputs/flutter-apk/*.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: riden-android-debug-${{ github.sha }}
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
+          if-no-files-found: error

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CH340 USB-Serial device filter.  When the user plugs a CH340 module
+  into the Android device's USB-C / OTG port, the system shows a
+  "Open with RIDEN Power Supply" dialog; if the app is already the
+  default handler for this device_filter it auto-opens and gets
+  granted USB permission without an extra popup each session.
+
+  IDs:
+    VID 0x1A86 = 6790 (decimal)  — QinHeng Electronics (formerly WCH)
+    PID 0x7523 = 29723 (decimal) — CH340 / CH341 USB-Serial bridge
+-->
+<resources>
+    <usb-device
+        vendor-id="6790"
+        product-id="29723" />
+</resources>

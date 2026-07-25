@@ -16,6 +16,20 @@
 /windows/flutter/generated_plugin_registrant.h
 /windows/flutter/generated_plugins.cmake
 
+# Phase 4 — Android 构建产物 / IDE 文件（不入库）
+/android/.gradle/
+/android/local.properties
+/android/key.properties
+/android/app/upload-keystore.jks
+/android/app/debug.keystore
+/android/captures/
+/android/app/build/
+/android/app/.cxx/
+/android/build/
+/android/.idea/
+/android/*.iml
+/android/app/*.iml
+
 # 应用项目应 commit pubspec.lock，故不 ignore。
 
 # ── IDE / 编辑器 ───────────────────────────────────────────────────────────
