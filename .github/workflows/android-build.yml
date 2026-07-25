@@ -52,7 +52,52 @@ jobs:
           # Phase 4 §7 — 同 release-android.yml 的 patch 步骤一致。
           set -e
 
-          cat > "$HOME/.pub-cache/hosted/pub.dev/flutter_libserialport-0.4.0/android/build.gradle" <<'PATCH'
+          # ── Patch 1: usb_serial 0.5.2 android/build.gradle ──────────
+          cat > "$HOME/.pub-cache/hosted/pub.dev/usb_serial-0.5.2/android/build.gradle" <<'PATCH'
+          group 'dev.bessems.usbserial'
+          version '1.0'
+
+          buildscript {
+              repositories { google(); mavenCentral() }
+          }
+
+          rootProject.allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url "https://jitpack.io" }
+              }
+
+              gradle.projectsEvaluated {
+                  tasks.withType(JavaCompile) {
+                      options.compilerArgs << "-Xlint:unchecked" << "-Xlint:deprecation"
+                  }
+              }
+          }
+
+          apply plugin: 'com.android.library'
+
+          android {
+              compileSdk 34
+              namespace 'dev.bessems.usbserial'
+
+              defaultConfig {
+                  minSdkVersion 16
+                  testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+              }
+              lintOptions { disable 'InvalidPackage' }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+
+          dependencies {
+              implementation 'com.github.felHR85:UsbSerial:6.1.0'
+          }
+          PATCH
+
+          # ── Patch 2: flutter_libserialport 0.4.0 android/build.gradle ─
           group 'org.sigrok.flutter_libserialport'
           version '1.0-SNAPSHOT'
 
