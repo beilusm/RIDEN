@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'dart:isolate';
 
 import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'package:flutter/services.dart' show RootIsolateToken;
 import 'package:usb_serial/usb_serial.dart' as usb;
 
 import 'serial_port_scanner.dart';
@@ -17,14 +18,19 @@ import 'serial_port_scanner.dart';
 /// [enumerateUsbPortsViaIsolate] callback into a [SerialPortScanner]
 /// — the UI isolate never invokes [SerialPort] methods directly,
 /// preserving the "UI isolate 永远不直接访问 SerialPort" invariant
-/// from CLAUDE.md.
+/// from CLAUDE.md (Desktop 路径 — libserialport FFI 是真同步阻塞
+/// I/O，必须放 isolate).
 ///
-/// Each call spins up a fresh isolate via [Isolate.run], runs the
-/// synchronous enumeration, returns the list, and the isolate is
-/// auto-killed by `Isolate.run`'s lifecycle.  One scan ≈ one
-/// short-lived isolate ≈ a few hundred ms — acceptable for the
-/// connect-time auto-detect flow which runs at most once per user
-/// connect attempt.
+/// ── Android 例外 ──────────────────────────────────────────────────
+/// Android 路径上的 usb_serial 是 platform channel API（异步非阻塞
+/// MethodChannel），不是 FFI；调用 `UsbSerial.listDevices()` 不阻塞
+/// UI isolate。它需要 RootIsolateToken + Activity 上下文才能路由
+/// MethodChannel — transient `Isolate.run` 启动的 isolate 没有传 token，
+/// 调用会 throw StateError 导致 app crash。
+///
+/// 故 Android 路径在 UI isolate 直接 await，不走 `Isolate.run`。这
+/// 不违反"UI 不直接访问 SerialPort"铁律的本意 — 该铁律针对 libserialport
+/// FFI 同步阻塞调用，不针对 platform channel async 调用。
 ///
 /// Robustness contract: a single vanished port (e.g. hot-unplug
 /// between `sp_list_ports` and `sp_get_port_by_name`) must not break
@@ -40,7 +46,10 @@ import 'serial_port_scanner.dart';
 /// talks to usb_serial, so the platform story stays consistent.
 List<UsbPortInfo> enumerateUsbPortsSync() {
   if (Platform.isAndroid) {
-    return _enumerateAndroidSync();
+    throw StateError(
+        'Android path should not call enumerateUsbPortsSync — use '
+        'enumerateUsbPortsViaIsolate (it routes Android through a '
+        'direct UI-isolate Future, not Isolate.run).');
   }
   return _enumerateDesktopSync();
 }
@@ -71,72 +80,50 @@ List<UsbPortInfo> _enumerateDesktopSync() {
   return out;
 }
 
-/// Android enumerate — synchronous adapter over usb_serial's async
-/// `UsbSerial.listDevices()` so it slots into the existing
-/// [Isolate.run] contract used by [enumerateUsbPortsViaIsolate].
+/// Android enumeration — async (platform channel) function returning
+/// the list of [UsbPortInfo] for CH340 adapters found by the host
+/// UsbManager.  Must run in the UI isolate (or any isolate whose
+/// `BackgroundIsolateBinaryMessenger.ensureInitialized` was called
+/// with the UI's RootIsolateToken).
 ///
-/// Caller invariant: invoked only inside an isolate that has called
-/// [BackgroundIsolateBinaryMessenger.ensureInitialized] with the UI
-/// isolate's RootIsolateToken (see
-/// `lib/services/serial_backend.dart::initWorkerBackgroundChannel`).
-/// When the transient scan isolate aleady inherits that wiring the
-/// MethodChannel reply works end-to-end.  Without it, the channel
-/// reply silently discards and the future hangs — Phase 4 fast-paths
-/// usb_serial calls back to the UI isolate by reusing
-/// `enumerateUsbPortsViaIsolate`'s Isolate.run spawn, which shares
-/// the binary messenger wiring.
-List<UsbPortInfo> _enumerateAndroidSync() {
-  // usb_serial.listDevices() is async (MethodChannel round-trip); the
-  // Isolate.run wrapper provides a sync entry contract.  We bridge
-  // this with a one-shot Future.wait + blocking await — Dart waits
-  // are cooperative, no native blocking, but the Isolate itself stays
-  // alive until the future completes (Isolate.run's contract is to
-  // return the entry's return value, regardless of await depth).
-  final completer = Completer<List<UsbPortInfo>>();
-  usb.UsbSerial.listDevices().then((devs) {
-    final out = <UsbPortInfo>[];
-    for (final d in devs) {
-      // CH340 VID 0x1A86 / PID 0x7523 — only emit ports that match the
-      // RIDEN device_filter so [SerialPortScanner.scanCh340] sees the
-      // same single-port semantics as the Desktop path.
-      if (d.vid == 0x1A86 && d.pid == 0x7523) {
-        out.add(UsbPortInfo(
-          name: 'usb://CH340/${d.deviceId ?? -1}',
-          vendorId: d.vid,
-          productId: d.pid,
-        ));
-      }
+/// Caller invariant: invoked in the UI isolate (the default scanner
+/// factory wires this up via [SerialModbusService]'s
+/// `_defaultScannerFactory`).
+Future<List<UsbPortInfo>> _enumerateAndroidAsync() async {
+  final devs = await usb.UsbSerial.listDevices();
+  final out = <UsbPortInfo>[];
+  for (final d in devs) {
+    if (d.vid == 0x1A86 && d.pid == 0x7523) {
+      out.add(UsbPortInfo(
+        name: 'usb://CH340/${d.deviceId ?? -1}',
+        vendorId: d.vid,
+        productId: d.pid,
+      ));
     }
-    completer.complete(out);
-  }).catchError((e) {
-    completer.completeError(Exception('usb_serial listDevices failed: $e'));
-  });
-  // ignore: discarded_futures — Isolate.run wraps this in a sync
-  // contract; the future is awaited inside the isolate's message loop.
-  return _awaitResult(completer.future);
+  }
+  return out;
 }
 
-/// Bridge an async future back to a "sync-style" return inside an
-/// Isolate.run target.  Uses a ReceivePort + message-loop drain —
-/// equivalent to a blocking await but without raw dart:ffi sleep.
-List<UsbPortInfo> _awaitResult(Future<List<UsbPortInfo>> future) {
-  final receive = ReceivePort();
-  future.then<dynamic>((v) {
-    receive.sendPort.send(['ok', v]);
-  }).catchError((Object e) {
-    receive.sendPort.send(['err', e]);
-  });
-  final result = receive.first as List<dynamic>;
-  receive.close();
-  if (result[0] == 'ok') return result[1] as List<UsbPortInfo>;
-  throw result[1] as Object;
-}
-
-/// One-shot [Isolate.run] wrapper around [enumerateUsbPortsSync].
+/// One-shot [Isolate.run] wrapper around [enumerateUsbPortsSync]
+/// (Desktop) or a direct `await _enumerateAndroidAsync()` (Android).
+///
+/// Phase 4 — Android path returns the Future directly without
+/// spawning an isolate; usb_serial MethodChannel needs the UI
+/// RootIsolateToken which transient Isolate.run isolates don't carry.
 ///
 /// Used by [SerialModbusService]'s default scanner factory.  Tests
 /// bypass this — they inject a [SerialPortScanner] with a fake
 /// enumerator callback that returns a synthetic [UsbPortInfo] list,
 /// so no isolate is spawned and no FFI is touched.
-Future<List<UsbPortInfo>> enumerateUsbPortsViaIsolate() =>
-    Isolate.run(enumerateUsbPortsSync);
+Future<List<UsbPortInfo>> enumerateUsbPortsViaIsolate() {
+  if (Platform.isAndroid) {
+    return _enumerateAndroidAsync();
+  }
+  return Isolate.run(_enumerateDesktopSync);
+}
+
+// Suppress unused warning when building Android runner dependencies —
+// RootIsolateToken is imported byserial_backend.dart separately.
+// Kept here for documentation of the contract (no runtime effect).
+// ignore: unused_element
+void _androidTokenContractNote(RootIsolateToken? token) => token;
