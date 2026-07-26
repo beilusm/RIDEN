@@ -110,7 +110,7 @@ Windows 10 / 11 通常会通过 Windows Update 自动安装 CH340 / CH341 驱动
 
 ## 开发者文档
 
-如果你是开发者或想从源码构建打包，请参见 [**开发者文档**](docs/DEVELOPMENT.md)。
+如果你是开发者或想从源码构建打包，请参见 [**架构与开发指南**](docs/ARCHITECTURE.md)；项目修改禁令见 [CLAUDE.md](CLAUDE.md)。
 
 ## 许可证
 

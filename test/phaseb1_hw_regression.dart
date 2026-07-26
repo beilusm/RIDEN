@@ -55,7 +55,7 @@
 //      * HR8 / HR9 after M_target→M0 reverts to M0 storage — the
 //        device does NOT reload M0 preset when HR19 is written to 0
 //        (firmware treats HR19=0 as a no-op).  Documented in
-//        SESSION_HANDOFF.md "Phase B.1 设备固件行为".  Not a Phase B.1 code
+//        docs/ARCHITECTURE.md "HR19 quickSwitch — M0 不可切回".  Not a Phase B.1 code
 //        regression.
 //      * HR82/HR83 INVARIANT across the M0<->Mx<->M0 cycle =
 //        datasheet address-overlap confirmation.
@@ -312,8 +312,8 @@ void main() {
       //   RECORDED (firmware design — documented, NOT a Verdict gate):
       //     - HR8/HR9 REVERSE load (M_target→M0 doesn't revert to M0).
       //       Phase B.1 hardware discovered HR19=0 is a no-op for the
-//       reload path; this is documented in SESSION_HANDOFF.md
-//       ("Phase B.1 设备固件行为") and is NOT a Phase B.1 code regression.
+//       reload path; this is documented in docs/ARCHITECTURE.md
+//       ("HR19 quickSwitch — M0 不可切回") and is NOT a Phase B.1 code regression.
       //     - HR82/HR83 stability across the cycle.
 
       print('\n========== Phase B.1 hardware summary ==========');

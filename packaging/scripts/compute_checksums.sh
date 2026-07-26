@@ -132,7 +132,8 @@ generate_release_notes() {
     echo
     echo "- GitHub repository not yet published — AppStream \`url\` fields are unreachable"
     echo "  (metainfo is validated with \`--no-net\`)"
-    echo "- Internal observation OBS-1 / OBS-2 — see \`docs/SESSION_HANDOFF.md\`"
+    echo "- OBS-1 release binary long-idle (~110s) may auto-pause `[SCHED] pause group=poll` — 仅在无 GUI 操作的 long-idle 场景，非构建问题，正常使用不复现"
+    echo "- OBS-2 release binary 不响应 SIGINT 仅响应 SIGTERM (Flutter Linux GTK 模板未注册 SIGINT handler)"
     echo
   } > "${notes}"
 

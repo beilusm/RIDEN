@@ -14,7 +14,7 @@
 #   4. file_picker 8.3.7  android/build.gradle  — 删 AGP 7.4.2 classpath +
 #     compileSdk 跟随 rootProject
 #
-# 详见 docs/PHASE_4_ANDROID.md §7。
+# 详见 docs/ARCHITECTURE.md "构建 Release → Android APK"。
 
 set -euo pipefail
 
