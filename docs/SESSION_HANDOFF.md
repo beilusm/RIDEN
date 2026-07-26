@@ -1,6 +1,6 @@
 # Project Status
 
-RIDEN 数控电源 Flutter 上位机（Linux + Windows + Android）。当前阶段：**v1.1.0 已正式 Release — Phase 4 Android 平台移植完成 (commits `e51428c` → `1ce417c` → `b4b97e5` → `f56df04` → `14b01c0`)，真机 PASS 2026-07-25 (V/A/W 波形 + quickSwitch M2 + USB watcher 拔插自连 + Recording CSV STOP 弹系统文件选择器选保存位置)**。后续阶段候选：Phase 4.1 Android share/export 二次入口 / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码 / setOVP/OCP 写入路径 active slot 数据源修复。
+RIDEN 数控电源 Flutter 上位机（Linux + Windows + Android）。当前阶段：**v1.1.1 已正式 Release — Phase 5 Memory Slot 数据组值编辑完成 (preset dialog EDIT 入口 + 4 字段编辑子 dialog + 4 鲁棒性修复 + 7 测试)，零通信层改动**。后续阶段候选：Phase 4.1 Android share/export 二次入口 / v1.1.2 fork `usb_serial` 消除 pub-cache patch / quickSwitch 延迟优化 / P1-1 `_onPollMiss` 死代码 / setOVP/OCP 写入路径 active slot 数据源修复。
 
 架构、通信参数、设计约束、修改禁令见 `CLAUDE.md`。本文件只记录当前 patch 状态、验证结果、剩余 TODO。
 
@@ -1491,5 +1491,51 @@ Desktop 路径保持 Phase E 原行为：START 前弹原生 Save dialog 选 path
 - **quickSwitch 延迟优化**
 - **P1-1 `_onPollMiss` 死代码** (仍 OPEN)
 - **setOVP/OCP 写入路径 active slot 数据源修复** (需 datasheet 硬件验证)
+
+# Phase 5 — Memory Slot 数据组值编辑 (APPLIED, v1.1.1 released 2026-07-26)
+
+**用户需求**：加入编辑 M1-M9 数据组值功能，入口在打开数据组的菜单里面。override CLAUDE.md "不新增业务功能" 禁令（仅本次会话，用户明确请求）。
+
+## 设计
+
+编辑入口设在 dashboard 上的 `SetpointPanel._showPresets` 预设 dialog（`BottomStatus` 是孤立旧 widget 不出现在 `dashboard_panel.dart`，不算入口）。每行尾部 `IconButton(Icons.edit)` → 弹出 4 字段 (V SET / I SET / OVP / OCP) 编辑子 dialog，带 +/- spin button + 0..62V/0..6.2A clamp（与 `_editDialog` 一致），Save 写入设备。preset dialog 用 `Consumer<PowerSupplyProvider>` 包裹，编辑后 subtitle 自动刷新不关对话框。
+
+### Storage-only edit 语义
+
+Writing slot storage registers (HR[80 + index*4 + 0..3]) only — **不动 HR8/HR9 live Vset/Iset**。OVP/OCP edit on *active* slot happens to land on the same physical register (HR[80+activeSlot*4+2/3] is also the active protection register per Phase B.2)，但 V-Set/I-Set storage edits 需要 [quickSwitch] round-trip 才能应用到 live Vset/Iset。UI 提示用户 "tap LOAD (quickSwitch) after EDIT to activate"。
+
+### Authority routing
+
+UI → `provider.saveSlotValues(index, v, i, ovp, ocp)` → `_service.saveMemorySlot` (existing method，三 ModbusService 实现均已有 HR[80+i*4+0..3] 写入路径，未改) → `_loadOneSlot(index)` refresh 缓存 + `notifyListeners`。零通信层改动。
+
+## 鲁棒性修复 4 (UI + provider)
+
+| # | 路径 | 改动 |
+|---|------|------|
+| 1 | UI commit | try/catch + SnackBar 友好提示。成功绿色 SnackBar `M$index preset saved`，失败红色 `Save M$index failed: $e`；失败时 dialog 不关，用户可重试 |
+| 2 | UI commit | 无效输入 SnackBar 非静默吞 — 4 字段任一 `double.tryParse` 返回 null 时弹红色 SnackBar `Invalid value — use a decimal number` + **不关闭 dialog**，让用户能修正。`Navigator.pop` 只在 `saveSlotValues` 成功路径后执行 |
+| 3 | UI _editField | onSubmitted commit — `_editField` 加 `ValueChanged<String> onSubmitted` 参数；4 字段共用 `(_) => commit()` 回调，回车键直接 commit (与 `_editDialog` 一致) |
+| 10 | provider saveSlotValues | `[SLOT_EDIT]` debugPrint — 成功路径写 `[SLOT_EDIT] before M$index <oldVals> → <newVals>` / `[SLOT_EDIT] after M$index <refreshedVals> (changed|no change — write same as before)`，风格与 `[QSW]` 一致，真机调试可观测设备真实回值 |
+
+## 新增 / 修改文件
+
+- **新增** `test/save_slot_values_test.dart` — 7 个新测试：
+  1. 写入缓存刷新 (slotValues resolved after saveSlotValues)
+  2. 覆盖已 seed slot (M1 4-val updated)
+  3. notifyListeners 触发 (UI dialog consumer rebuild)
+  4. 越界 no-op (-1 / 10 短路不写不通知)
+  5. storage-only 不动 live V/I (quickSwitch(1) 后 saveSlotValues(2,...) 不影响 HR8/HR9)
+  6. M0 边界守卫 (UI 隐藏 M0 但 provider 接受 index=0 ranged-valid)
+  7. 服务失败 rethrow 不吞错 (`_ThrowingSaveMock` test double throws on saveMemorySlot)
+- **修改** `lib/providers/power_supply_provider.dart` — 新增 `saveSlotValues(index, v, i, ovp, ocp)` 方法（87-行块），含 0..9 范围守卫 + `[SLOT_EDIT]` 日志 + service 失败 rethrow
+- **修改** `lib/widgets/setpoint_panel.dart` — `_showPresets` 加 `Consumer<PowerSupplyProvider>` 包裹 + 每行 trailing `IconButton(Icons.edit)`；新增 `_showEditSlotDialog`（try/catch + SnackBar + 无效输入提示 + onSubmitted commit）；新增 `_editField`（带 onSubmitted 参数）
+
+## 铁律保持
+
+未触碰：`ModbusScheduler` / `modbus_task.dart` / `modbus_service.dart` 抽象接口 / `serial_modbus_service.dart` / `mock_modbus_service.dart` / `direct_android_modbus_service.dart` / `modbus_worker.dart` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / `quickSwitch` / 数据模型 / `RegisterDefinition` / `register_conflicts` / `serial_port_scanner.dart` / `serial_port_enumerator.dart` / `serial_backend.dart`。Phase 5 全部在 UI isolate 新增方法 + UI dialog，复用 `service.saveMemorySlot` 既有写入路径，零通信层改动。
+
+## 验收
+
+`flutter analyze` 21 issues / 0 新增；`flutter test` 98 PASS / 0 回归（91 旧 + 7 新）。
 
 

@@ -154,7 +154,7 @@ static const _verboseLog = false; // set true for per-task debug logs
 
 ### 通用
 - 不主动提交 git，除非用户明确要求
-- 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 / Phase L1.2 / **Phase 4 Android** 章节）
+- 不新增业务功能（当前阶段只做稳定性修复；**发布工程相关除外**，见 Phase 3 / Phase W1 / Phase L1.2 / **Phase 4 Android** / **Phase 5 Slot Edit** 章节）
 - 任何代码修改完成后必须运行 `fvm flutter analyze` 验证 0 新 issue
 - 不重新启用 `@Deprecated` 的 `loadSlot()` / `loadMemorySlot()` — HR19 quickSwitch 已硬件验证为设备唯一真实切换入口，旧路径软件模拟仅供回退测试保留
 - **Phase 4 Android 移植 override 仅限 `modbus_worker.dart` driver 层 / `serial_port_enumerator.dart` / `lib/main.dart` 平台守卫 / `lib/app.dart` UI 触屏适配**；其他铁律全部保留，详见 `docs/PHASE_4_ANDROID.md` §6
@@ -215,3 +215,15 @@ static const _verboseLog = false; // set true for per-task debug logs
   - **版本来源 S6**：新增 `packaging/config/env_android.sh` `APP_VERSION="1.1.0"`，纳入 4 处 env 一致性同步（S2 env.sh + S3 env_windows.sh + S6 env_android.sh 与 S1 pubspec）。
   - **CI workflows**：`release-android.yml` (tag 触发 + GitHub Release 上传 APK + SHA256SUMS-android.txt) + `android-build.yml` (push 触发 dev CI, 4m39s PASS)。
   - **验收**：`flutter analyze` 21 issues / 0 新增；`flutter test` 91 PASS / 0 回归；真机 V/A/W 波形显示 + quickSwitch M2 切换 + USB watcher 拔插自连 + Recording CSV STOP 弹系统文件选择器选保存位置全验证 PASS。
+- **Phase 5 — Memory Slot 数据组值编辑 (preset dialog EDIT 入口 + saveSlotValues API + 4 鲁棒性修复 + 7 测试)**: **APPLIED**（仅本次会话，override CLAUDE.md "不新增业务功能" 禁令 — 用户明确请求 "加入编辑 M1-M9 数据组值功能，入口在打开数据组菜单里面"。**已发布 v1.1.1**)。核心改动：
+  - **设计**：编辑入口设在 `SetpointPanel._showPresets` 预设 dialog（dashboard 上的实际入口 — `BottomStatus` 是孤立旧 widget 不出现在 `dashboard_panel.dart`）。每行尾部 `IconButton(Icons.edit)` → 弹出 4 字段 (V SET / I SET / OVP / OCP) 编辑子 dialog，带 +/- spin button + 0..62V/0..6.2A clamp（与 `_editDialog` 一致），Save 写入设备。 preset dialog 用 `Consumer<PowerSupplyProvider>` 包裹，编辑后 subtitle 自动刷新不关对话框。
+  - **Storage-only edit 语义**：Writing slot storage registers (HR[80 + index*4 + 0..3]) only — 不动 HR8/HR9 live Vset/Iset。OVP/OCP edit on *active* slot happens to land on the same physical register (HR[80+activeSlot*4+2/3] is also the active protection register per Phase B.2)，但 V-Set/I-Set storage edits 需要 [quickSwitch] round-trip 才能应用到 live Vset/Iset。UI 提示用户 "tap LOAD (quickSwitch) after EDIT to activate"。
+  - **Authority routing**：UI → `provider.saveSlotValues(index, v, i, ovp, ocp)` → `_service.saveMemorySlot` (existing method，三 ModbusService 实现均已有 HR[80+i*4+0..3] 写入路径，未改) → `_loadOneSlot(index)` refresh 缓存 + `notifyListeners`。
+  - **鲁棒性修复 4 (UI + provider)**：
+    - **#1 try/catch + SnackBar 友好提示** — `commit()` async + try/catch；成功绿色 SnackBar `M$index preset saved`，失败红色 `Save M$index failed: $e`（沿用 recording_panel 风格 + `AppTheme.voltGreen`/`errorRed`）。失败时 dialog 不关，用户可重试。
+    - **#2 无效输入 SnackBar 非静默吞** — 4 字段任一 `double.tryParse` 返回 null 时弹红色 SnackBar `Invalid value — use a decimal number` 并 **不关闭 dialog**，让用户能修正。`Navigator.pop` 只在 `saveSlotValues` 成功路径后执行。
+    - **#3 onSubmitted commit** — `_editField` 加 `ValueChanged<String> onSubmitted` 参数；4 字段共用 `(_) => commit()` 回调，回车键直接 commit（与 `_editDialog` 一致）。
+    - **#10 `[SLOT_EDIT]` debugPrint** — provider 成功路径写 `[SLOT_EDIT] before M$index <oldVals> → <newVals>` / `[SLOT_EDIT] after M$index <refreshedVals> (changed|no change — write same as before)`，风格与 `[QSW]` 一致，真机调试可观测设备真实回值。
+  - **新增文件**：`test/save_slot_values_test.dart`（7 个新测试 — 写入缓存刷新 / 覆盖已 seed slot / notifyListeners / 越界 no-op / storage-only 不动 live V/I / M0 边界守卫 / 服务失败 rethrow 不吞错 + `_ThrowingSaveMock` test double）。
+  - **铁律保持**：不改 ModbusScheduler / `modbus_task.dart` / `modbus_service.dart` 抽象接口 / `serial_modbus_service.dart` / `mock_modbus_service.dart` / `direct_android_modbus_service.dart` / `modbus_worker.dart` / `_accumulateRead` 250ms / FAST 150ms / SLOW 1000ms / quickSwitch / 数据模型 / `RegisterDefinition` / `register_conflicts` / `serial_port_scanner.dart` / `serial_port_enumerator.dart` / `serial_backend.dart`。Phase 5 全部在 UI isolate 新增方法 + UI dialog，复用 `service.saveMemorySlot` 既有写入路径，零通信层改动。
+  - **验证**：`flutter analyze` 21 issues / 0 新增；`flutter test` 98 PASS / 0 回归（91 旧 + 7 新）。

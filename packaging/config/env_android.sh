@@ -12,7 +12,7 @@
 export APP_ID="io.github.beilusm.ridenps"
 export APP_NAME="RIDEN_PowerSupply"          # 文件名用下划线，避免空格敏感工具
 export APP_DISPLAY_NAME="RIDEN Power Supply" # UI 显示名 / android:label
-export APP_VERSION="1.1.0"
+export APP_VERSION="1.1.1"
 # Android Flutter build 路径用 apk / debug | release （不区分 x64/arm64)
 export APK_FLAVOR="release"                  # Flutter build apk --release 输出
 # ARB / abi splits 默认输出 arm64-v8a + armeabi-v7a + x86_64 — release-android

@@ -879,4 +879,64 @@ class PowerSupplyProvider extends ChangeNotifier {
       rethrow;
     }
   }
+
+  /// Edit M1..M9 preset storage: writes [vSet]/[iSet]/[ovp]/[ocp]
+  /// into slot [index]'s storage registers HR[80 + index*4 + 0..3]
+  /// via [ModbusService.saveMemorySlot], then re-reads the slot
+  /// via [_loadOneSlot] to refresh the cached [_slots] entry and
+  /// drive [notifyListeners].
+  ///
+  /// Storage-only edit semantics — does NOT touch the live active
+  /// registers HR8/HR9 (Vset/Iset).  An OVP/OCP edit on a slot that
+  /// happens to be the active one will land on the same physical
+  /// register (HR[80 + activeSlot*4 + 2/3] is also the active
+  /// protection register, see Phase B.2 / quickSwitch); the live
+  /// Vset/Iset, however, only get the new preset after a
+  /// [quickSwitch] round-trip.  Use LOAD (quickSwitch) after EDIT
+  /// to activate a freshly edited preset on the live output.
+  ///
+  /// Range-guard: caller is responsible for clamping [vSet]/[ovp]
+  /// into 0..62 V and [iSet]/[ocp] into 0..6.2 A; the service
+  /// encoding (round() to int raw) silently wraps oversized
+  /// values, so the UI dialog MUST clamp before invoking.
+  Future<void> saveSlotValues(
+      int index, double v, double i, double ovp, double ocp) async {
+    if (index < 0 || index > 9) {
+      debugPrint('[PROVIDER] saveSlotValues($index) ignored — out of '
+          'range (must be 0..9)');
+      return;
+    }
+    try {
+      final before = _slots[index];
+      final beforeStr = before != null
+          ? '${before[0].toStringAsFixed(2)}V/'
+              '${before[1].toStringAsFixed(3)}A/'
+              '${before[2].toStringAsFixed(2)}V/'
+              '${before[3].toStringAsFixed(3)}A'
+          : 'null';
+      debugPrint('[SLOT_EDIT] before M$index  $beforeStr  '
+          '→  ${v.toStringAsFixed(2)}V/${i.toStringAsFixed(3)}A/'
+          '${ovp.toStringAsFixed(2)}V/${ocp.toStringAsFixed(3)}A');
+      await _service.saveMemorySlot(index, v, i, ovp, ocp);
+      await _loadOneSlot(index);
+      final after = _slots[index];
+      final afterStr = after != null
+          ? '${after[0].toStringAsFixed(2)}V/'
+              '${after[1].toStringAsFixed(3)}A/'
+              '${after[2].toStringAsFixed(2)}V/'
+              '${after[3].toStringAsFixed(3)}A'
+          : 'null';
+      final unchanged = before != null
+          && after != null
+          && (after[0] - before[0]).abs() < 1e-6
+          && (after[1] - before[1]).abs() < 1e-9
+          && (after[2] - before[2]).abs() < 1e-6
+          && (after[3] - before[3]).abs() < 1e-9;
+      debugPrint('[SLOT_EDIT] after  M$index  $afterStr  '
+          '${unchanged ? "(no change — write same as before)" : "(changed)"}');
+    } catch (e) {
+      debugPrint('[PROVIDER] saveSlotValues($index) failed: $e');
+      rethrow;
+    }
+  }
 }
