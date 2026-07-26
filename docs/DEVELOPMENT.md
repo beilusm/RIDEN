@@ -250,7 +250,7 @@ cmake --install . --prefix /usr
 ## AI 协作文档
 
 - **[CLAUDE.md](../CLAUDE.md)** — 项目铁律 / 架构约束 / 修改禁令 / Phase 历史
-- **[docs/SESSION_HANDOFF.md](SESSION_HANDOFF.md)** — 跨会话状态交接 / 当前 patch 状态 / Phase 实施记录
+- **[docs/SESSION_HANDOFF.md](SESSION_HANDOFF.md)** — 工程证据存档：Verified Facts (源码 file:line)、Disproved Assumptions、Patch A.1–B.1 Line Index、Phase 3 HiDPI 否决证据、W1.5 CRT 审计、v1.0.1 FROZEN 元数据、Release History、Outstanding TODO
 - **[docs/PHASE_4_ANDROID.md](PHASE_4_ANDROID.md)** — Android 平台移植设计与实施
 - **[docs/PHASE_5_SLOT_EDIT.md](PHASE_5_SLOT_EDIT.md)** — Memory Slot 数据组编辑设计与实施
 

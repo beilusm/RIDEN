@@ -101,7 +101,7 @@ static const _verboseLog = false; // set true for per-task debug logs
 - **不在 `AppRun` 设 `GDK_BACKEND` / `GTK_THEME` / `GTK_PATH` 等环境变量** — AppRun 仅 9 行，故意不设 GTK 环境变量保留用户系统 HiDPI 主题 / font-scaling-factor
 - **不改 `packaging/config/env.sh` 的 `APP_ID` / `APP_VERSION`** — 必须与 `linux/CMakeLists.txt:10` (`APPLICATION_ID`) 和 `pubspec.yaml` (`version:`) 保持一致；改一处要同步改另两处
 - **不把 `release/` / `packaging/tools/` / `*.AppImage` 入库** — 已在 `.gitignore` 排除；这些是构建时产物
-- **v1.0 范围不引入 zsync / `--updateinformation` / GPG 签名 / GitHub Actions CI / 多 distro 自动测试** — 详见 SESSION_HANDOFF "Not Implemented (延期到后续版本)"
+- **v1.0 范围不引入 zsync / `--updateinformation` / GPG 签名 / 多 distro 自动测试** — GitHub Actions CI 已在 Phase L1.1/L1.2 实施；zsync 增量更新 / GPG 签名 / 多 distro 矩阵测试延期到后续版本
 - 不改 `make_appimage.sh` 的 Stage 4 (AppRun 写入逻辑) — 任何 GTK 环境变量注入都会导致 HiDPI 回归
 
 ### Windows 发布工程（Phase W1 已实施 — 见 `docs/SESSION_HANDOFF.md` Phase W1）
@@ -116,26 +116,28 @@ static const _verboseLog = false; // set true for per-task debug logs
 
 ## 版本来源管理 (Phase L1.2 已实施)
 
-**pubspec.yaml 是版本主来源**（`version: 1.0.0+1`）。每次发版改一处 pubspec + 两处 env*.sh，CI 自动校验一致性，metainfo.xml 由 CI 注入。
+**pubspec.yaml 是版本主来源**（`version: x.x.x+N`）。每次发版改一处 pubspec + 三处 env*.sh，CI 自动校验一致性，metainfo.xml 由 CI 注入。
 
-### 5 处硬编码版本来源
+### 6 处硬编码版本来源
 
 | # | 文件 | CI 校验 | CI 注入 | 同步责任 |
 |---|------|---------|---------|---------|
-| S1 | `pubspec.yaml` `version:` | ✓ 两 workflow 都校验 (strip `+build`) | — | 开发者 |
-| S2 | `packaging/config/env.sh` `APP_VERSION="1.0.0"` | ✓ `release-linux.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
-| S3 | `packaging/config/env_windows.sh` `APP_VERSION="1.0.0"` | ✓ `release-windows.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
-| S4 | `windows/runner/Runner.rc` `VERSION_AS_STRING "1.0.0"` | ✗ | ✗ | Flutter 工具链已从 pubspec 注入 FileVersion/ProductVersion 数值字段 |
-| S5 | `linux/metainfo/io.github.beilusm.ridenps.metainfo.xml` `<release version="1.0.0" date="2026-07-19">` | ✗ | ✓ `release-linux.yml` `sed` 注入 tag 版本 + 当天日期到 runner workspace | CI |
+| S1 | `pubspec.yaml` `version:` | ✓ 三 workflow 都校验 (strip `+build`) | — | 开发者 |
+| S2 | `packaging/config/env.sh` `APP_VERSION="..."` | ✓ `release-linux.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
+| S3 | `packaging/config/env_windows.sh` `APP_VERSION="..."` | ✓ `release-windows.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
+| S4 | `windows/runner/Runner.rc` `VERSION_AS_STRING "..."` | ✗ | ✗ | Flutter 工具链已从 pubspec 注入 FileVersion/ProductVersion 数值字段 |
+| S5 | `linux/metainfo/io.github.beilusm.ridenps.metainfo.xml` `<release version="..." date="...">` | ✗ | ✓ `release-linux.yml` `sed` 注入 tag 版本 + 当天日期到 runner workspace | CI |
+| S6 | `packaging/config/env_android.sh` `APP_VERSION="..."` | ✓ `release-android.yml` Step 4 (strip `-prerelease`) | — | 开发者 |
 
 ### 发版流程（v1.0.1+）
 
 1. 改 `pubspec.yaml` `version:` (S1) — 主来源
 2. 改 `packaging/config/env.sh` `APP_VERSION="..."` (S2)
 3. 改 `packaging/config/env_windows.sh` `APP_VERSION="..."` (S3)
-4. **不改** `linux/metainfo/...metainfo.xml` `<release>` — Linux release workflow CI 自动注入 tag 版本 + 当前日期到 runner workspace 工作副本
-5. **不改** `windows/runner/Runner.rc` `VERSION_AS_STRING` — 该字符串字段仅影响 VS_VERSION_INFO 资源块中的一个条目；Flutter 工具链已从 `pubspec.yaml` 自动注入 `FileVersion` / `ProductVersion` 数值字段。Phase L1.2-A 接受不校验 S4
-6. 打 tag `v1.0.1` → 两 workflow 同步触发 → CI 校验 S1+S2 (Linux) / S1+S3 (Windows) → Linux 注入 S5 → 双平台 assets 上传到同一 Release
+4. 改 `packaging/config/env_android.sh` `APP_VERSION="..."` (S6)
+5. **不改** `linux/metainfo/...metainfo.xml` `<release>` — Linux release workflow CI 自动注入 tag 版本 + 当前日期到 runner workspace 工作副本
+6. **不改** `windows/runner/Runner.rc` `VERSION_AS_STRING` — 该字符串字段仅影响 VS_VERSION_INFO 资源块中的一个条目；Flutter 工具链已从 `pubspec.yaml` 自动注入 `FileVersion` / `ProductVersion` 数值字段。Phase L1.2-A 接受不校验 S4
+7. 打 tag `vx.x.x` → 三 workflow 同步触发 → CI 校验 S1+S2 (Linux) / S1+S3 (Windows) / S1+S6 (Android) → Linux 注入 S5 → 三平台 assets 上传到同一 Release
 
 ### CI 校验语义
 
@@ -146,9 +148,9 @@ static const _verboseLog = false; // set true for per-task debug logs
 
 ### 版本来源不做的事
 
-- **不创建 `sync_versions.sh` 自动同步脚本** — 五来源手工同步足够，避免脚本运行时机 / 共谋 / 修改 repo 内容等复杂度
+- **不创建 `sync_versions.sh` 自动同步脚本** — 六来源手工同步足够，避免脚本运行时机 / 共谋 / 修改 repo 内容等复杂度
 - **不自动修改 `Runner.rc`** — 二进制资源文件 sed 改易破坏 MSVC .rc 编译；Flutter 工具链已注入主要版本字段
-- **不改 `env.sh` / `env_windows.sh` / `metainfo.xml` 仓库文件本身** — CI 只校验 (S2/S3) 或只改 workspace 副本 (S5)，不 commit 不 push
+- **不改 `env*.sh` / `metainfo.xml` 仓库文件本身** — CI 只校验 (S2/S3/S6) 或只改 workspace 副本 (S5)，不 commit 不 push
 - **不扩展 dev CI**（`windows-build.yml` / `linux-build.yml`）— 版本校验只在 tag 触发的 release workflow 生效，dev CI 不变
 - **不改本地打包脚本**（`packaging/scripts/*.sh` / `make_appimage.sh`）— metainfo 注入由 CI workflow 内联 step 完成，不注入到本地构建链路
 
@@ -161,13 +163,15 @@ static const _verboseLog = false; // set true for per-task debug logs
 
 ## 当前 Patch 状态
 
-见 `docs/SESSION_HANDOFF.md`：
+工程证据存档 (源码 file:line / 真机实测 / Patch A.1–B.1 Line Index / Phase 3 HiDPI 实测 / W1.5 CRT 审计 / Release History) 见 `docs/SESSION_HANDOFF.md`。各 Phase 实施详情见 `docs/PHASE_4_ANDROID.md` / `docs/PHASE_5_SLOT_EDIT.md`。
+
+Phase 状态:
 
 - **Phase 1** — Release 验证：APPLIED（25MB bundle，干净环境启动正常，SIGTERM 3s 退出）
 - **Phase 2** — Linux Desktop Integration：APPLIED（App ID / 图标 / .desktop / metainfo / udev 全部完成）
 - **Phase 3** — Release Engineering：APPLIED（4 个 packaging 脚本，9.9MB AppImage，HiDPI 验证通过）
 - **Phase W1** — Windows Resource + ZIP Pipeline：APPLIED（Runner.rc 4 字段 + main.cpp 标题 + 20KB .ico + env_windows.sh + make_windows_zip.sh + build_windows_release.sh）
-- **Phase W2** — Windows Release 实测：v1.0.0 已通过 `release-windows.yml` CI 发布 (Windows-only Latest)；本地 `make_windows_zip.sh` 路径仍待用户在 Windows 主机实测
+- **Phase W2** — Windows Release 实测：APPLIED（v1.0.0 / v1.0.4 / v1.1.0 / v1.1.1 均已通过 `release-windows.yml` CI 发布，Windows-only Latest runner）
 - **Phase L1.1** — Linux GitHub Release automation：APPLIED（`release-linux.yml` 17 steps，`gh release` fallback，AppImage + SHA256SUMS-linux.txt）
 - **Phase L1.2** — 版本来源 CI 校验 + metainfo 注入：APPLIED（双 workflow +env*.sh 校验 / Linux +metainfo sed 注入；见"版本来源管理"章节）
 - **P0 修复 + P1-3 修复 + Option B refactor**：APPLIED
@@ -212,7 +216,7 @@ static const _verboseLog = false; // set true for per-task debug logs
   - **AndroidManifest**：`<uses-feature android:name="android.hardware.usb.host"/>` + `<intent-filter USB_DEVICE_ATTACHED>` + `@xml/device_filter` 含 CH340 `vendor-id="6790" product-id="29987"` (= 0x7523 decimal，不是 29723 = 0x741B)。
   - **SystemUiMode**：`immersiveSticky`（commit `f56df04`）— `edgeToEdge` 只让状态栏透明覆盖，时间/电池图标仍一直可见；immersiveSticky 彻底隐藏，边缘向内滑临时唤出。
   - **Recording CSV Android 路径**（commit `14b01c0`）：Android SAF (Storage Access Framework) 是 one-shot bytes-only — `FilePicker.saveFile(bytes:)` 写 bytes 到 content:// URI，无"open writable stream"模式。故 Android 流程：START 立即开始写 app 私有 tmp 文件（path_provider application support dir）→ STOP 时 flush+close → 读 tmp bytes → `FilePicker.saveFile(bytes:)` 弹系统文件选择器选保存位置 → SAF 落盘 → 删 tmp。Cancel 保留 tmp 并 SnackBar 提示路径。Desktop 路径保持原 Save dialog 先行不变。
-  - **版本来源 S6**：新增 `packaging/config/env_android.sh` `APP_VERSION="1.1.0"`，纳入 4 处 env 一致性同步（S2 env.sh + S3 env_windows.sh + S6 env_android.sh 与 S1 pubspec）。
+  - **版本来源 S6**：新增 `packaging/config/env_android.sh` `APP_VERSION="1.1.0"`，纳入 3 处 env 一致性同步（S2 env.sh + S3 env_windows.sh + S6 env_android.sh 与 S1 pubspec — 共 4 处需手工同步）。
   - **CI workflows**：`release-android.yml` (tag 触发 + GitHub Release 上传 APK + SHA256SUMS-android.txt) + `android-build.yml` (push 触发 dev CI, 4m39s PASS)。
   - **验收**：`flutter analyze` 21 issues / 0 新增；`flutter test` 91 PASS / 0 回归；真机 V/A/W 波形显示 + quickSwitch M2 切换 + USB watcher 拔插自连 + Recording CSV STOP 弹系统文件选择器选保存位置全验证 PASS。
 - **Phase 5 — Memory Slot 数据组值编辑 (preset dialog EDIT 入口 + saveSlotValues API + 4 鲁棒性修复 + 7 测试)**: **APPLIED**（仅本次会话，override CLAUDE.md "不新增业务功能" 禁令 — 用户明确请求 "加入编辑 M1-M9 数据组值功能，入口在打开数据组菜单里面"。**已发布 v1.1.1**)。核心改动：
