@@ -506,6 +506,18 @@ class DirectAndroidModbusService implements ModbusService {
     return readRegisters(80 + index * 4, 4, prio: 5, group: 'user');
   }
 
+  /// Android USB-serial path mirrors [SerialModbusService.readActiveSlot].
+  /// Background-tier single-register read of HR[19]; see the abstract
+  /// [ModbusService.readActiveSlot] docstring for rationale.
+  @override
+  Future<int?> readActiveSlot() async {
+    final regs = await readRegisters(19, 1,
+        prio: 50, group: 'user', dedup: 'hr19_confirm', expire: 2000);
+    if (regs == null || regs.isEmpty) return null;
+    final v = regs[0];
+    return (v >= 0 && v <= 9) ? v : null;
+  }
+
   @override
   Future<List<MemorySlot>> readAllMemorySlots() async {
     final regs = await readRegisters(80, 40, prio: 5, group: 'user') ??

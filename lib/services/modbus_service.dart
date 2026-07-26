@@ -131,6 +131,30 @@ abstract class ModbusService {
   /// cannot pile up stale reads forever.
   Future<List<int>?> readRawRegisters({String? dedup, int? expireMs});
 
+  /// Read HR[19] (0x13) — the device-side "Quick Preset" selector
+  /// register.  Returns the active memory-slot index 0..9, or `null`
+  /// if the device is disconnected / the read failed.
+  ///
+  /// Background-priority single-register read (scheduler
+  /// `TaskPriority.background` = base 50, the lowest tier — does not
+  /// contend with FAST poll `dedup="fast"` or SLOW slot scan
+  /// `dedup="slot_M0".."slot_M9"`).  Uses an independent
+  /// `dedup="hr19_confirm"` key so it cannot be cancelled by or
+  /// cancel any other queued task.  Runs in the `user` scheduler
+  /// group (NOT `poll`), so Register Page's `pauseGroup('poll')`
+  /// does NOT pause this confirmation read.
+  ///
+  /// Provider runs this on a 1s `Timer.periodic` to reconcile its
+  /// optimistic `_activeSlot` cache against the device's true state
+  /// — covers the case where the user switches preset via the
+  /// hardware front-panel (the device firmware updates HR[19] but
+  /// the UI's optimistic cache becomes stale).  UI continues
+  /// rendering from the cache between ticks for smoothness; on
+  /// mismatch the cache is overwritten in-place + the new active
+  /// slot's OVP/OCP is re-synced from `_slots`.  See
+  /// [PowerSupplyProvider._confirmActiveSlot].
+  Future<int?> readActiveSlot();
+
   /// Pause tiered polling timers (for register view mode).
   void pauseTieredPolling();
 

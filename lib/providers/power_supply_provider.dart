@@ -90,6 +90,33 @@ class PowerSupplyProvider extends ChangeNotifier {
   Timer? _bgSlotTimer;
   bool _slotsLoaded = false;
 
+  // ── HR[19] active-slot confirmation timer ──────────────────────
+  //
+  // Background timer that periodically reconciles `_activeSlot`
+  // against the device's actual HR[19] value.  Without this, the
+  // optimistic cache set by `quickSwitch()` would drift silently
+  // whenever the user switches preset via the hardware front-panel
+  // (the firmware writes HR[19]; the UI never re-reads it).
+  //
+  // The timer issues ONE `TaskPriority.background` (base=50) single-
+  // register read per tick via `ModbusService.readActiveSlot`.  That
+  // runs in the `user` scheduler group with a stable dedup key
+  // `'hr19_confirm'`, so it neither contends with FAST poll
+  // (`dedup='fast'`, budget 150ms) nor with SLOW slot scan
+  // (`dedup='slot_M0'..'slot_M9'`, budget 1000ms); scheduler aging
+  // ensures low priority cannot starve it indefinitely while the
+  // connection stays healthy.
+  //
+  // Tick cadence = 1s, aligned with SLOW poll.  On mismatch the
+  // optimistic `_activeSlot` is overwritten in place (preserving
+  // UI smoothness, no flash) and the new active slot's stored
+  // OVP/OCP is re-synced from the `_slots` cache (same pattern as
+  // the SLOT-sync branch of `_onData`).  notifyListeners fires so
+  // widgets reading `provider.activeSlot` rebuild with the new
+  // label (bottom_status chip, setpoint_panel PRESET row, preset
+  // dialog ACTIVE highlight).
+  Timer? _activeSlotConfirmTimer;
+
   // ── USB watcher timer (Phase D) ────────────────────────────────
   // Polls [_service.scanCh340] at [_usbWatchInterval] cadence.  The
   // scan is a one-shot isolate USB enumeration (`sp_get_port_usb_vid_pid`)
@@ -289,6 +316,7 @@ class PowerSupplyProvider extends ChangeNotifier {
       _data = _data.copyWith(commStatus: CommStatus.online);
       _startBgSlotRefresh();
       _startHealthCheck();
+      _startActiveSlotConfirm();
     } catch (e) {
       debugPrint('[PROVIDER] connect failed: $e');
       rethrow;
@@ -358,6 +386,8 @@ class PowerSupplyProvider extends ChangeNotifier {
     _healthTimer?.cancel();
     _bgSlotTimer?.cancel();
     _bgSlotTimer = null;
+    _activeSlotConfirmTimer?.cancel();
+    _activeSlotConfirmTimer = null;
     _sub?.cancel();
     _sub = null;
     // Phase E — drop the cached snapshot so a stale reading
@@ -392,6 +422,8 @@ class PowerSupplyProvider extends ChangeNotifier {
     stopUsbWatch();
     _healthTimer?.cancel();
     _bgSlotTimer?.cancel();
+    _activeSlotConfirmTimer?.cancel();
+    _activeSlotConfirmTimer = null;
     _sub?.cancel();
     _logger.dispose(); // Phase E — flush + close any open CSV file
     _service.disconnect();
@@ -470,6 +502,40 @@ class PowerSupplyProvider extends ChangeNotifier {
     });
   }
 
+  // ── HR[19] active-slot confirmation ────────────────────────────
+  //
+  // 1s tick that reads the device's currently-active preset register
+  // and reconciles `_activeSlot` against it.  Background-tier Modbus
+  // read — does not contend with FAST / SLOW polls.  See
+  // [ModbusService.readActiveSlot] for scheduler details.
+  void _startActiveSlotConfirm() {
+    _activeSlotConfirmTimer?.cancel();
+    _activeSlotConfirmTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _confirmActiveSlot());
+  }
+
+  Future<void> _confirmActiveSlot() async {
+    if (!_connected) return;
+    final hr19 = await _service.readActiveSlot();
+    if (hr19 == null) return;
+    if (hr19 == _activeSlot) return;
+
+    // Mismatch — device and cache have diverged (most likely the
+    // user switched preset via the hardware front-panel).  Overwrite
+    // the optimistic cache in place so subsequent UI reads see the
+    // device's truth, and re-sync active-slot OVP/OCP from the local
+    // slot cache (mirrors the SLOT-sync branch of `_onData`).
+    debugPrint('[PROVIDER] HR19 active-slot drift: '
+        'cache=M$_activeSlot device=M$hr19 → overwriting cache');
+    _activeSlot = hr19;
+    final slot = _slots[hr19];
+    if (slot != null && slot.length >= 4) {
+      _data = _data.copyWith(ovp: slot[2], ocp: slot[3]);
+    }
+    notifyListeners();
+    _service.incNotify();
+  }
+
   void _updateCommStatus(CommStatus status) {
     if (_data.commStatus != status) {
       _data = _data.copyWith(commStatus: status);
@@ -513,6 +579,8 @@ class PowerSupplyProvider extends ChangeNotifier {
         _healthTimer?.cancel();
         _bgSlotTimer?.cancel();
         _bgSlotTimer = null;
+        _activeSlotConfirmTimer?.cancel();
+        _activeSlotConfirmTimer = null;
         _data = _data.copyWith(commStatus: CommStatus.error);
         notifyListeners();
         _service.incNotify();

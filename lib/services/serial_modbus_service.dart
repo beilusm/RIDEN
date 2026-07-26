@@ -397,6 +397,18 @@ class SerialModbusService implements ModbusService {
         Future.value(null);
   }
 
+  /// Background-priority single-register read of HR[19] to confirm
+  /// the device's currently active memory slot.  See
+  /// [ModbusService.readActiveSlot] for scheduler choice rationale.
+  @override
+  Future<int?> readActiveSlot() async {
+    final regs = await _worker?.readRegisters(19, 1,
+            prio: 50, group: 'user', dedup: 'hr19_confirm', expire: 2000);
+    if (regs == null || regs.isEmpty) return null;
+    final v = regs[0];
+    return (v >= 0 && v <= 9) ? v : null;
+  }
+
   /// Phase B.1 — bulk-read all 10 memory slots in one Modbus RTU
   /// round-trip (HR[80..119], 40 consecutive registers).  Replaces
   /// the provider's prior 10× `readMemorySlot(i)` cycle in

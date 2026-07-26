@@ -226,6 +226,8 @@ class _ThrowingSaveMock implements ModbusService {
   Future<List<int>?> readRawRegisters({String? dedup, int? expireMs}) =>
       _inner.readRawRegisters(dedup: dedup, expireMs: expireMs);
   @override
+  Future<int?> readActiveSlot() => _inner.readActiveSlot();
+  @override
   void pauseTieredPolling() => _inner.pauseTieredPolling();
   @override
   void resumeTieredPolling() => _inner.resumeTieredPolling();

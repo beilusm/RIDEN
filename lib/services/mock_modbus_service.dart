@@ -182,6 +182,13 @@ class MockModbusService implements ModbusService {
     return _slots[index];
   }
 
+  /// Mock mirrors HR[19] via [_quickSlot] (kept in sync by
+  /// [writeRegister] case 19 and [quickSwitch]).  No isolate / no
+  /// scheduler in mock mode — return synchronously.  See
+  /// [ModbusService.readActiveSlot].
+  @override
+  Future<int?> readActiveSlot() async => _quickSlot;
+
   /// Phase B.1 — mock bulk-read all 10 memory slots.  The mock's
   /// `_slots` map is the source of truth, so we synthesise the
   /// [MemorySlot] list directly without going through the simulated
