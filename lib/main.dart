@@ -6,6 +6,7 @@ import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'providers/power_supply_provider.dart';
 import 'services/direct_android_modbus_service.dart';
+import 'services/floating_window_controller.dart';
 import 'services/modbus_service.dart';
 import 'services/serial_modbus_service.dart';
 
@@ -43,15 +44,15 @@ Future<void> main() async {
     // 短暂停留后再次自动隐藏。
     // 之前的 edgeToEdge 模式只让状态栏透明覆盖在 chart 上，状态栏
     // 图标（时间 / 电池）仍然一直可见，违反用户期望。
-    await SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.immersiveSticky,
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
     );
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ));
   }
 
   // Real Modbus RTU connection to the RIDEN power supply.
@@ -71,8 +72,13 @@ Future<void> main() async {
       : SerialModbusService();
 
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => PowerSupplyProvider(modbusService),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(
+          create: (_) => PowerSupplyProvider(modbusService),
+        ),
+        ChangeNotifierProvider(create: (_) => FloatingWindowController()),
+      ],
       child: const PowerSupplyApp(),
     ),
   );

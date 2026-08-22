@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'providers/power_supply_provider.dart';
+import 'services/floating_window_controller.dart';
 import 'theme/app_theme.dart';
+import 'widgets/floating_overlay.dart';
 import 'widgets/power_chart.dart';
 import 'widgets/dashboard_panel.dart';
 import 'widgets/register_page.dart';
@@ -62,22 +64,30 @@ class _PowerSupplyShellState extends State<PowerSupplyShell> {
     final showReg = context.watch<PowerSupplyProvider>().showRegisters;
     if (showReg) return const Scaffold(body: RegisterPage());
 
+    if (context.watch<FloatingWindowController>().isFloating) {
+      return const FloatingOverlay();
+    }
+
     return Scaffold(
       body: LayoutBuilder(
         builder: (context, constraints) {
           final isWide = constraints.maxWidth > 900;
           if (isWide) {
-            return Row(children: [
-              const Expanded(flex: 80, child: PowerChart()),
-              Container(width: 1, color: AppTheme.borderSubtle),
-              const Expanded(flex: 20, child: DashboardPanel()),
-            ]);
+            return Row(
+              children: [
+                const Expanded(flex: 80, child: PowerChart()),
+                Container(width: 1, color: AppTheme.borderSubtle),
+                const Expanded(flex: 20, child: DashboardPanel()),
+              ],
+            );
           } else {
-            return Column(children: [
-              const Expanded(flex: 60, child: PowerChart()),
-              Container(height: 1, color: AppTheme.borderSubtle),
-              const Expanded(flex: 40, child: DashboardPanel()),
-            ]);
+            return Column(
+              children: [
+                const Expanded(flex: 60, child: PowerChart()),
+                Container(height: 1, color: AppTheme.borderSubtle),
+                const Expanded(flex: 40, child: DashboardPanel()),
+              ],
+            );
           }
         },
       ),
