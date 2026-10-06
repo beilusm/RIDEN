@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=RIDEN
+Comment=RIDEN power supply control
+Exec=RIDEN
+Icon=io.github.beilusm.ridenps
+Type=Application
+Categories=Utility;Electronics;
+Terminal=false

@@ -1,117 +1,74 @@
-# RIDEN Power Supply
+# RIDEN
 
-> 跨平台桌面/移动端上位机，通过 CH340 USB-Serial 与 RIDEN 数控电源通信，提供实时波形、参数设定、预设管理与保护监控。
+使用 Compose Multiplatform 的 RIDEN 数控电源上位机，共享 Kotlin 通信核心与 Material 3 界面，目标平台为 Linux、Windows 和 Android。
 
-支持 **Linux**、**Windows**、**Android** 三平台，同一份代码、同一套功能。
+当前版本 **2.0.0**。[下载发布包](https://github.com/beilusm/RIDEN/releases/latest)。新版本按 `2.0.1` 递增，同版补丁使用 `2.0.0-1` 后缀；版本来源与发布流程见 [发布说明](docs/RELEASING.md)。
+
+Flutter 旧版完整保存在分支 `legacy/flutter`（`7baebf8`）。当前重构的验收进度见 [迁移记录](docs/MIGRATION.md)。
 
 ## 功能
 
-- ⚡ **实时波形** — V / A / W 滚动曲线（150ms 刷新）
-- 🎛️ **参数设定** — 电压 / 电流 / OVP / OCP 步进编辑
-- 📌 **预设管理** — M1-M9 共 9 组数据组，快速切换 / 编辑
-- 🛡️ **保护监控** — OVP / OCP / OTP 状态实时显示
-- 📼 **数据录制** — CSV 逐点落盘，与波形 1:1 对应
-- 🔌 **自动连接** — 拔插 USB 电缆自识别、自重连
-- 📊 **300 点历史** — 滚动累积，可滚动查看近期趋势
+- 电压、电流、功率实时显示，150 ms 轮询、300 点波形历史；分图刻度、实际时间轴、最小/最大/平均值、悬停读数及触摸选点，支持暂停、缩放和自动量程。
+- 电压、电流、OVP、OCP 参数编辑；设定下方直接选择、载入及编辑 M1-M9 预设。
+- 按型号区分设定与保护上限及寄存器精度，识别 60067 衍生型号；能力表和待核对项见 [型号能力](docs/DEVICE_CAPABILITIES.md)。
+- 输入电压、温度、CV/CC、保护状态、累计容量与能量。
+- CH340 USB 串口自动发现、重连，手动选择端口、波特率和 Modbus 地址。
+- CSV 逐点录制、121 个寄存器查看、受控写入与 CSV 导出。
+- 桌面悬浮监控、中性灰明暗主题与独立 V/A/W 数据色；Android 12+ Material You 动态配色。桌面默认使用固定配色。
+- PC 使用左侧导航与紧凑顶栏；手机窄屏底部导航，横屏/平板按宽度切换侧边导航。
 
-## 下载安装
+## 开发运行
 
-前往 [ Releases 页面](https://github.com/beilusm/RIDEN/releases) 下载最新版本对应平台包：
+需要 JDK 17；Android 构建另需 Android SDK 35。Gradle Wrapper 固定版本，无需安装系统 Gradle。
 
-| 平台 | 文件 | 安装方式 |
-|---|---|---|
-| 🐧 **Linux** | `RIDEN_PowerSupply-x.x.x-linux-x86_64.AppImage` | `chmod +x` 后直接双击运行 |
-| 🪟 **Windows** | `RIDEN_PowerSupply-x.x.x-windows-x64.zip` | 解压后双击 `riden_power_supply.exe` |
-| 📱 **Android** | `RIDEN_PowerSupply-x.x.x-android-arm64-v8a.apk` | 允许"未知来源"后点击安装 |
+```bash
+./gradlew :composeApp:run
+./gradlew :composeApp:run --args="--demo"
+./gradlew :composeApp:desktopTest
 
-> 下载后建议用 `SHA256SUMS-*.txt` 校验文件完整性。
+# Android
+export ANDROID_HOME="$HOME/Android/Sdk"
+./gradlew :composeApp:assembleDebug
+adb install -r composeApp/build/outputs/apk/debug/composeApp-debug.apk
 
-## 硬件要求
+# 自带运行时的桌面应用目录
+./gradlew :composeApp:createDistributable
+# 按主机平台生成 deb/rpm/msi/dmg
+./gradlew :composeApp:packageDistributionForCurrentOS
+# Linux AppImage（另需 appimagetool）
+bash packaging/scripts/make_appimage.sh
+```
 
-- RIDEN 系列数控电源（Modbus RTU 地址 `0x01`）
-- CH340 USB-Serial 转换器（USB VID `1a86` / PID `7523`）
-- 通信参数：`115200 baud · 8 data bits · no parity · 1 stop bit`
+桌面构建产物位于 `composeApp/build/compose/binaries/`。Windows 安装包必须在 Windows 构建。
+Linux deb/rpm 打包需要对应的 `dpkg-deb` / `rpmbuild` 工具；AppImage 位于 `release/`，包含 Java 运行时。
+Android Release APK 必须配置发布签名；本机私有签名和 GitHub Actions secrets 的配置方式见 [发布说明](docs/RELEASING.md)。发布 APK 可直接安装，早期 2.0 Debug 版需导出数据、卸载后再安装发布版。
+无显示服务的 CI 可用 `-PskipUiTests=true` 只运行核心测试；界面测试会输出 `composeApp/build/screenshots/`。
+Android 无硬件演示可用 `adb shell am start -n io.github.beilusm.ridenps/.MainActivity --ez demo true`。
 
-## 系统要求
+## 连接硬件
 
-| 平台 | 系统 | 备注 |
-|---|---|---|
-| Linux | Ubuntu 20.04+ / Fedora 32+ / Mint 20+ | glibc ≥ 2.31，AppImage 自包含 GTK |
-| Windows | Windows 10 / 11 x64 | 需 [VC++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe)（多数系统已预装） |
-| Android | Android 5.0+ (API 21+) | arm64-v8a 架构 |
+默认通信：`115200 · 8N1 · Modbus RTU · address 1`。打开连接页可修改。
+自动连接优先识别 WCH（VID `1a86`）设备；手动断开会关闭自动连接。
 
-## 常见问题
-
-<details>
-<summary><b>Linux 启动报 "Permission denied /dev/ttyUSBx"</b></summary>
-
-USB 串口默认属 `dialout` 组，普通用户无权限。两种解决方法任选其一：
-
-**方法 A：安装 udev 规则（推荐，永久生效）**
+Linux 串口权限：
 
 ```bash
 sudo cp linux/udev/99-riden-ch34x.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger --action=add --subsystem-match=tty --attr-match=idVendor=1a86
-# 拔插一次 CH340 适配器或重启
+sudo udevadm trigger --action=add --subsystem-match=tty
 ```
 
-**方法 B：加入 dialout 组**
+也可加入发行版的串口用户组（通常是 `dialout` 或 `uucp`），重新登录后生效。
+Windows 需要 CH340 驱动；Android 需要 OTG，首次连接授权 USB 访问。
 
-```bash
-# Arch / Debian / Ubuntu:  dialout
-# Fedora / RHEL:           dialout  (或 tty)
-# openSUSE / BSD:           uucp
-sudo usermod -aG dialout $USER
-# 注销重新登录后生效
-```
+M0 是设备上电默认组，写入 HR19=0 不会重新载入，因此仅提供 M1-M9 切换。
+保护值使用活动预设的存储地址 `80 + HR19 * 4 + 2/3`，操作后回读。
+寄存器表中未知地址只能查看，所有写入经过类型、范围和精度校验。
 
-</details>
+## 数据录制
 
-<details>
-<summary><b>Windows 首次插入 CH340 后未识别</b></summary>
+桌面开始录制时选择文件，采样期间增量写入；停止时排空缓冲并关闭文件。
+Android 先写应用私有临时文件，停止时使用系统文件选择器导出，取消导出会保留私有文件。
+CSV 列保留旧版名称，时间使用本地 ISO-8601 格式，电流保留设备的毫安精度。
 
-Windows 10 / 11 通常会通过 Windows Update 自动安装 CH340 / CH341 驱动，需联网等待 1-2 分钟。如仍未出现 `COMx` 端口，从 [WCH 官网](http://www.wch.cn/downloads/CH341SER_EXE.html) 手动下载驱动安装。
-
-</details>
-
-<details>
-<summary><b>Windows 启动报 "找不到 VCRUNTIME140.dll"</b></summary>
-
-下载安装 [VC++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe)（约 14 MB，一次性安装）。
-
-</details>
-
-<details>
-<summary><b>Windows SmartScreen 显示 "已保护你的电脑"</b></summary>
-
-应用未做代码签名，首次启动会显示该警告。点击 **更多信息 → 仍要运行** 即可。后续版本将申请代码签名证书消除该警告。
-
-</details>
-
-<details>
-<summary><b>Android 连接 RIDEN 电源后没反应</b></summary>
-
-确认手机 OTG 功能可用且 OTG 线支持数据传输（部分充电线无数据引脚）。应用需要 USB HOST 权限，首次插入 CH340 系统会弹"打开 RIDEN_PowerSupply"prompt，允许后自动连接。
-
-</details>
-
-## 使用
-
-启动应用后插入 CH340 OTG 线连接 RIDEN 电源，应用会自动识别并连接。主面板包含：
-
-- **顶部** — 通信状态 / 输入电压 / 设备温度 / 固件版本
-- **中部** — V / A / W 大字号实时读数 + 输出开关
-- **SETTINGS** — 电压 / 电流 / OVP / OCP 设定（点击编辑）
-- **PRESET M$x$** — M1-M9 预设选择（点击切换 / 编辑）
-- ** SERIAL** — 串口状态 + 手动连接 / 断开
-- **RECORDING** — CSV 数据录制开始 / 停止
-- **底部** — 实时波形图（V / A 双 Y 轴滚动 300 点）
-
-## 开发者文档
-
-如果你是开发者或想从源码构建打包，请参见 [**架构与开发指南**](docs/ARCHITECTURE.md)；项目修改禁令见 [CLAUDE.md](CLAUDE.md)。
-
-## 许可证
-
-MIT License — 见仓库源文件头注释。
+架构和实现约束见 [开发指南](docs/ARCHITECTURE.md) 与 [CLAUDE.md](CLAUDE.md)。

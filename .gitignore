@@ -25,6 +25,10 @@
 /android/captures/
 /android/app/build/
 /android/app/.cxx/
+/android/gradlew
+/android/gradlew.bat
+/android/gradle/wrapper/gradle-wrapper.jar
+/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 /android/build/
 /android/.idea/
 /android/*.iml
@@ -33,6 +37,10 @@
 # 应用项目应 commit pubspec.lock，故不 ignore。
 
 # ── IDE / 编辑器 ───────────────────────────────────────────────────────────
+.gradle/
+.kotlin/
+**/build/
+local.properties
 .idea/
 .vscode/
 *.iml
@@ -76,6 +84,9 @@ desktop.ini
 *.key
 *.pem
 *.p12
+*.jks
+*.keystore
+*signing.json
 credentials
 *.token
 

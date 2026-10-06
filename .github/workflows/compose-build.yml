@@ -1,0 +1,185 @@
+name: Compose Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compose-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$GITHUB_REF_NAME" = "v$(tr -d '\r\n' < VERSION)"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install desktop build dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1 libfontconfig1 fakeroot
+      - name: Test and package Linux
+        run: xvfb-run -a ./gradlew :composeApp:desktopTest :composeApp:createDistributable :composeApp:packageDeb
+      - name: Package release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          curl -fL --retry 3 https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage -o "$RUNNER_TEMP/appimagetool"
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          export PATH="$RUNNER_TEMP:$PATH"
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          bash packaging/scripts/make_appimage.sh
+          version="$(tr -d '\r\n' < VERSION)"
+          cp composeApp/build/compose/binaries/main/deb/*.deb "release/RIDEN-$version-linux-amd64.deb"
+          rm release/SHA256SUMS-linux.txt
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: RIDEN-Linux
+          path: release/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-Linux
+          path: |
+            composeApp/build/reports/tests/
+            composeApp/build/screenshots/
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(tr -d '\r\n' < VERSION)"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test and build Windows application
+        run: .\gradlew.bat :composeApp:desktopTest -PskipUiTests=true :composeApp:createDistributable :composeApp:packageMsi
+      - name: Verify and package Windows assets
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $bundle = "composeApp/build/compose/binaries/main/app/RIDEN"
+          if (-not (Test-Path "$bundle/RIDEN.exe")) { throw "Missing RIDEN.exe" }
+          if (-not (Test-Path "$bundle/runtime/bin/java.dll")) { throw "Missing bundled Java runtime" }
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Compress-Archive -Path $bundle -DestinationPath "release/RIDEN-$version-windows-x64.zip"
+          $installers = @(Get-ChildItem "composeApp/build/compose/binaries/main/msi/*.msi")
+          if ($installers.Count -ne 1) { throw "Expected one MSI installer" }
+          Copy-Item $installers[0].FullName "release/RIDEN-$version-windows-x64.msi"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RIDEN-Windows
+          path: release/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-Windows
+          path: composeApp/build/reports/tests/
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$GITHUB_REF_NAME" = "v$(tr -d '\r\n' < VERSION)"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and lint Android
+        run: ./gradlew :composeApp:assembleDebug :composeApp:lintDebug
+      - name: Restore Android release signing
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RIDEN_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "::error::Missing RIDEN_KEYSTORE_BASE64"; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/riden-release.jks"
+          chmod 600 "$RUNNER_TEMP/riden-release.jks"
+      - name: Build signed Android release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RIDEN_KEYSTORE_FILE: ${{ runner.temp }}/riden-release.jks
+          RIDEN_KEYSTORE_PASSWORD: ${{ secrets.RIDEN_KEYSTORE_PASSWORD }}
+          RIDEN_KEY_ALIAS: ${{ secrets.RIDEN_KEY_ALIAS }}
+          RIDEN_KEY_PASSWORD: ${{ secrets.RIDEN_KEY_PASSWORD }}
+        run: |
+          ./gradlew :composeApp:assembleRelease
+          version="$(tr -d '\r\n' < VERSION)"
+          mkdir -p release
+          apk="release/RIDEN-$version-android.apk"
+          cp composeApp/build/outputs/apk/release/composeApp-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+      - name: Remove temporary signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/riden-release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RIDEN-Android
+          path: ${{ startsWith(github.ref, 'refs/tags/') && 'release/' || 'composeApp/build/outputs/apk/debug/' }}
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: RIDEN-*
+          merge-multiple: true
+          path: release/
+      - name: Verify assets and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          cd release
+          test -s "RIDEN-$version-windows-x64.zip"
+          test -s "RIDEN-$version-windows-x64.msi"
+          test -s "RIDEN-$version-x86_64.AppImage"
+          test -s "RIDEN-$version-linux-amd64.deb"
+          test -s "RIDEN-$version-android.apk"
+          sha256sum RIDEN-* > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          notes="../docs/releases/$version.md"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" RIDEN-* SHA256SUMS.txt --clobber
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+          elif test -f "$notes"; then
+            gh release create "$GITHUB_REF_NAME" RIDEN-* SHA256SUMS.txt --verify-tag --title "RIDEN $version" --notes-file "$notes" --latest
+          else
+            gh release create "$GITHUB_REF_NAME" RIDEN-* SHA256SUMS.txt --verify-tag --title "RIDEN $version" --generate-notes --latest
+          fi
