@@ -83,6 +83,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Test and build Windows application
         run: .\gradlew.bat :composeApp:desktopTest -PskipUiTests=true :composeApp:createDistributable :composeApp:packageMsi
+      - name: Verify installation, shortcuts, repair and upgrade
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem "composeApp/build/compose/binaries/main/msi/*.msi")
+          if ($installer.Count -ne 1) { throw "Expected one MSI installer" }
+          & ./packaging/scripts/test_windows_install.ps1 -Installer $installer[0].FullName
       - name: Verify and package Windows assets
         shell: pwsh
         run: |
@@ -104,7 +110,10 @@ jobs:
         if: always()
         with:
           name: test-results-Windows
-          path: composeApp/build/reports/tests/
+          path: |
+            composeApp/build/reports/tests/
+            composeApp/build/reports/windows-install/
+            composeApp/build/screenshots/
 
   android:
     runs-on: ubuntu-24.04

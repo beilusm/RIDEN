@@ -2,7 +2,7 @@
 
 使用 Compose Multiplatform 的 RIDEN 数控电源上位机，共享 Kotlin 通信核心与 Material 3 界面，目标平台为 Linux、Windows 和 Android。
 
-当前版本 **2.0.0**。[下载发布包](https://github.com/beilusm/RIDEN/releases/latest)。新版本按 `2.0.1` 递增，同版补丁使用 `2.0.0-1` 后缀；版本来源与发布流程见 [发布说明](docs/RELEASING.md)。
+当前版本 **2.0.0-1**。[下载发布包](https://github.com/beilusm/RIDEN/releases/latest)。新版本按 `2.0.1` 递增，同版补丁使用 `2.0.0-1` 后缀；版本来源与发布流程见 [发布说明](docs/RELEASING.md)。
 
 Flutter 旧版完整保存在分支 `legacy/flutter`（`7baebf8`）。当前重构的验收进度见 [迁移记录](docs/MIGRATION.md)。
 

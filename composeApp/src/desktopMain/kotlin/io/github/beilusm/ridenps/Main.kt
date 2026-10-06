@@ -18,7 +18,24 @@ import io.github.beilusm.ridenps.core.PowerController
 import io.github.beilusm.ridenps.ui.*
 import kotlinx.coroutines.launch
 
-fun main(args: Array<String>) = application {
+fun main(args: Array<String>) {
+    configureDesktopRendering()
+    application { RidenDesktop(args) }
+}
+
+// Set these before application initializes AWT or Skiko. Windows drivers can
+// reset the compositor when a Direct3D surface is resized to the full desktop.
+internal fun configureDesktopRendering() {
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        if (System.getProperty("skiko.renderApi") == null && System.getenv("SKIKO_RENDER_API").isNullOrBlank()) {
+            System.setProperty("skiko.renderApi", "SOFTWARE")
+        }
+        System.setProperty("sun.java2d.d3d", "false")
+    }
+}
+
+@Composable
+private fun ApplicationScope.RidenDesktop(args: Array<String>) {
     val controller = remember { PowerController(DesktopServices()) }
     val scope = rememberCoroutineScope()
     val state by controller.state.collectAsState()

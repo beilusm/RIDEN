@@ -18,6 +18,12 @@ MSI requires a numeric version, so its internal version is `major.minor.(patch *
 
 Android `versionCode` is `major * 10000000 + minor * 100000 + patch * 100 + revision`, so revisions and following releases increase monotonically. Supported components: major 1-99, minor 0-99, patch 0-655, revision 1-99; the MSI build component must not exceed 65535. Building validates these bounds.
 
+## Windows verification
+
+Windows defaults to software rendering and disables the Java2D Direct3D pipeline before UI initialization. The native launcher carries the same JVM options. This avoids driver-specific Direct3D resizing problems, at the cost of additional CPU usage. The Windows test checks an actual Compose window through floating, maximized, fullscreen and restored placements, saves screenshots, and asserts a nonblank software-rendered surface.
+
+MSI packaging makes the existing desktop and Start menu shortcut components unconditional: the installer has no shortcut selection UI. `prepare_windows_msi.ps1` uses the Windows Installer database API and requires exactly two RIDEN shortcut records. CI then performs a fresh install, checks the actual `.lnk` targets, removes and repairs the links, verifies uninstall cleanup, and upgrades the published 2.0.0 MSI after simulating missing shortcuts. Logs and window screenshots are attached to the Windows test artifact. Keep the per-user installation scope and upgrade UUID unchanged.
+
 ## Android signing
 
 Release builds require a persistent signing key. Debug keys are not used for published APKs. Configure repository secrets:

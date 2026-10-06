@@ -96,6 +96,9 @@ android {
 compose.desktop {
     application {
         mainClass = "io.github.beilusm.ridenps.MainKt"
+        if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+            jvmArgs += listOf("-Dskiko.renderApi=SOFTWARE", "-Dsun.java2d.d3d=false")
+        }
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Rpm, TargetFormat.Msi, TargetFormat.Dmg)
             packageName = "RIDEN"
@@ -129,4 +132,18 @@ tasks.matching { it.name == "assembleRelease" }.configureEach { dependsOn(verify
 tasks.withType<Test>().configureEach {
     if (providers.gradleProperty("skipUiTests").orNull == "true") exclude("**/AppUiTest.class")
     maxHeapSize = "512m"
+}
+
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
+    if (targetFormat == TargetFormat.Msi) {
+        inputs.file(rootProject.file("packaging/scripts/prepare_windows_msi.ps1"))
+        doLast {
+            val installer = destinationDir.get().asFile.listFiles().orEmpty().single { it.extension == "msi" }
+            project.exec {
+                commandLine("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                    rootProject.file("packaging/scripts/prepare_windows_msi.ps1").absolutePath,
+                    "-Installer", installer.absolutePath)
+            }
+        }
+    }
 }
