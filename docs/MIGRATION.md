@@ -26,7 +26,7 @@
 
 ## 验收状态
 
-2026-10-06：按用户要求优先完成软件移植，真机串口和 Windows 主机验收延后。
+2026-10-07：按用户要求完成软件移植和 2.0.0 发布准备，真机串口和物理 Windows 主机验收延后。
 
 已通过：
 
@@ -37,18 +37,19 @@
 - 型号能力、设定与保护独立上限、衍生 ID、RD6006P 精度、6012 电流缩放、未知型号只读、预设载入前校验；覆盖控制器和界面。各型号能力来源及未核对配置见 `docs/DEVICE_CAPABILITIES.md`。
 - 波形按 V/A/W 分图显示，独立刻度及最小/最大/平均值；X 轴使用真实时间间隔。桌面悬停、手机选点和拖动同步三项读数，选点暂停后数据保持不变，返回实时使用最新数据。截图 `chart-desktop-selected.png`、`chart-mobile-selected.png`。
 - 1120×820 桌面、680×820 窄桌面、360×800 手机、960×540 横屏及悬浮监控界面测试；桌面始终使用侧边导航，手机窄屏保留底部导航。预设整合到控制台设定下方，桌面 M2 与窄屏 M9 选择、载入通过演示测试。深浅主题截图位于 `composeApp/build/screenshots/`。
-- Android Debug 和未签名 Release APK 构建、Android lint（零错误）。
+- Android Debug 和发布签名 Release APK 构建；签名 v1/v2 校验通过，versionName 为 `2.0.0`。Android lint 零错误。
 - Android 手机演示启动、输出及曲线显示、SAF 导出。实际导出的 CSV 包含 383 个采样点，行数为 384（含表头）。取消第二次导出后，661 点录制保留在应用私有文件中。
 - Linux 自带 Java 运行时的应用目录和 AppImage 构建；桌面演示运行、透明悬浮监控、原生缩放、锁定和恢复主窗。
 - 最终 AppImage 的桌面文件选择和 CSV 录制验证通过：172 个采样点、173 行（含表头），文件保存在 `composeApp/build/screenshots/linux-demo.csv`。文件选择期间轮询继续运行。
 - Flutter 源码、旧测试和旧发布流程已退出当前工作树；完整版本由 `legacy/flutter` 保存。新 Android/Linux/Windows 构建工作流已配置。
+- GitHub Actions 三平台干净环境构建通过：[运行 37495763267](https://github.com/beilusm/RIDEN/actions/runs/37495763267)。Linux 完成 37 项测试及 DEB 构建，Windows 完成核心测试、自带运行时应用目录、ZIP 和 MSI 构建，Android 完成 Debug 构建及 lint。已下载检查 Windows ZIP 的 `RIDEN.exe`、Java 运行时及 Windows 原生依赖。
 
 环境限制及延后验收：
 
 - 没有 RIDEN / CH340 接入，USB 权限、拔插、预设与保护值写入、长时间通信仍需设备回归。演示及协议测试不等同于硬件验证。
-- Windows 主机未提供，Windows 串口运行和本机打包尚未执行；GitHub Actions 配置已准备，但没有提交或触发。
-- 本机缺少 `dpkg-deb` / `rpmbuild`，未生成 deb/rpm；AppImage 已生成。
+- Windows 串口和物理主机运行尚未验收；编译打包已在 GitHub Actions Windows runner 完成。
+- 本机缺少 `dpkg-deb` / `rpmbuild`；DEB 已在 GitHub Actions 构建，RPM 不在此次发布资产中。
 - Hyprland 默认平铺监控窗口，测试时手动切为浮动。使用平铺窗口管理器时，应为 `RIDEN · Monitor` 配置浮动规则。
-- Android Release APK 需要正式签名；当前 Android 手机 ADB 已离线，最新构建未再次安装。
+- Android 发布签名已配置为本机私有文件及 GitHub 加密 Secrets；当前 Android 手机 ADB 已离线，最新发布构建未再次安装。
 
 发布编号和签名配置见 `docs/RELEASING.md`。已有未跟踪的 `labview/` 未修改。
